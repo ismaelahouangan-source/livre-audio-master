@@ -35,7 +35,7 @@ if "texte_pret_pour_audio" not in st.session_state:
     st.session_state.texte_pret_pour_audio = None
 
 # ==============================================================================
-# FONCTIONS DE NETTOYAGE ET D'EXTRACTION
+# FONCTIONS DE STRUCTURE ET DE NETTOYAGE
 # ==============================================================================
 def extraire_texte(fichier_telecharge) -> str:
     nom_fichier = fichier_telecharge.name.lower()
@@ -47,16 +47,23 @@ def extraire_texte(fichier_telecharge) -> str:
     elif nom_fichier.endswith(".pdf"):
         doc = fitz.open(stream=fichier_telecharge.read(), filetype="pdf")
         for page in doc:
-            texte_extrait += page.get_text() + "\n"
+            texte_extrait += page.get_text() + "\n\n"
 
     return texte_extrait.strip()
 
 def nettoyer_texte_source(texte: str) -> str:
-    """Prépare le texte brut extrait du document (supprime sauts de ligne intempestifs et césures)."""
-    texte = re.sub(r'(?<![.\!?])\n', ' ', texte)
-    texte = re.sub(r'\s+([.,!?:;])', r'\1', texte)
-    texte = re.sub(r'(\w+)-\s+(\w+)', r'\1\2', texte)
-    
+    """
+    Supprime les coupures de ligne artificielles des PDF tout en préservant
+    les vrais sauts de paragraphe.
+    """
+    # 1. Répare les césures de mots coupés en fin de ligne (ex: "com- pulsive" -> "compulsive")
+    texte = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', texte)
+
+    # 2. Fusionne les retours à la ligne simples internes à une même phrase
+    # (Un saut de ligne qui n'est ni précédé ni suivi d'un autre saut de ligne devient un espace)
+    texte = re.sub(r'(?<!\n)\n(?!\n)', ' ', texte)
+
+    # 3. Corrections orthographiques courantes d'extraction
     corrections = {
         "c h a p i t r e": "chapitre",
         "ber ger": "berger",
@@ -67,57 +74,72 @@ def nettoyer_texte_source(texte: str) -> str:
     for erreur, correction in corrections.items():
         texte = texte.replace(erreur, correction)
         texte = texte.replace(erreur.capitalize(), correction.capitalize())
-        
-    texte = re.sub(r'\s+', ' ', texte)
+
+    # 4. Nettoyage des espaces horizontaux seuls (conserve les sauts de ligne verticaux)
+    texte = re.sub(r'[ \t]+', ' ', texte)
+    texte = re.sub(r'\n{3,}', '\n\n', texte)
     return texte.strip()
 
 def nettoyer_texte_pour_audio(texte: str) -> str:
     """
-    Élimine tous les artefacts nuisibles à la synthèse vocale (astérisques, balises, etc.).
+    Élimine les symboles parasites pour la synthèse vocale sans écraser la mise en page.
     """
     if not texte:
         return ""
 
-    # 1. Suppression intégrale des astérisques (italique/gras Markdown)
+    # 1. Suppression des astérisques Markdown
     texte = texte.replace("*", "")
 
-    # 2. Suppression des soulignés Markdown isolés (_mot_)
+    # 2. Nettoyage des balises Markdown de titres (#) en début de ligne
+    texte = re.sub(r'^#+\s*', '', texte, flags=re.MULTILINE)
+
+    # 3. Suppression des soulignés isolés (_mot_)
     texte = re.sub(r'(?<=\s)_(?=\S)|(?<=\S)_(?=\s)', '', texte)
-    texte = texte.replace("_", " ")
+    texte = texte.replace("_", "")
 
-    # 3. Suppression des titres Markdown (#, ##, ###)
-    texte = re.sub(r'^[#\s]+', '', texte, flags=re.MULTILINE)
+    # 4. Suppression du chiffre romain 'I' isolé en tête de document
+    texte = re.sub(r'^\s*I\s*\n+', '', texte)
 
-    # 4. Suppression du chiffre romain 'I' isolé en début de document (évite la lettre 'i')
-    texte = re.sub(r'^\s*I\s*\n', '', texte)
-
-    # 5. Normalisation des tirets cadratins et demi-cadratins pour une respiration naturelle
+    # 5. Normalisation des tirets cadratins pour des pauses orales naturelles
     texte = re.sub(r'\s*[—–]\s*', ', ', texte)
     texte = re.sub(r'^\s*[—–]\s*', '', texte, flags=re.MULTILINE)
 
-    # 6. Harmonisation des guillemets
+    # 6. Standardisation des guillemets
     texte = texte.replace("«", '"').replace("»", '"').replace("“", '"').replace("”", '"')
 
-    # 7. Nettoyage des points de suspension excessifs et espaces multiples
-    texte = re.sub(r'\.{4,}', '...', texte)
-    texte = re.sub(r'\s+', ' ', texte)
+    # 7. Préservation stricte de la structure des paragraphes
+    texte = re.sub(r'[ \t]+', ' ', texte)            # Espaces multiples horizontaux
+    texte = re.sub(r' +(?=\n)', '', texte)           # Espaces résiduels avant un saut
+    texte = re.sub(r'\n\s*\n', '\n\n', texte)       # Uniformisation des lignes vides
+    texte = re.sub(r'\n{3,}', '\n\n', texte)         # Maximum 2 sauts consécutifs
 
     return texte.strip()
 
 def decouper_texte_en_chunks(texte: str, taille_chunk: int = 8000) -> list:
+    """
+    Découpe le texte en respectant rigoureusement les frontières de paragraphes.
+    """
     if not texte:
         return []
+    
+    paragraphes = texte.split("\n\n")
     chunks = []
-    paragraphes = texte.split(". ") 
     chunk_actuel = ""
+
     for paragraphe in paragraphes:
-        if len(chunk_actuel) + len(paragraphe) > taille_chunk and len(chunk_actuel) > 0:
+        paragraphe_propre = paragraphe.strip()
+        if not paragraphe_propre:
+            continue
+
+        if len(chunk_actuel) + len(paragraphe_propre) + 2 > taille_chunk and len(chunk_actuel) > 0:
             chunks.append(chunk_actuel.strip())
-            chunk_actuel = paragraphe + ". "
+            chunk_actuel = paragraphe_propre + "\n\n"
         else:
-            chunk_actuel += paragraphe + ". "
+            chunk_actuel += paragraphe_propre + "\n\n"
+
     if chunk_actuel.strip():
         chunks.append(chunk_actuel.strip())
+
     return chunks
 
 def assainir_cle(cle_brute: str) -> str:
@@ -132,17 +154,19 @@ def assainir_cle(cle_brute: str) -> str:
 def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-3.6-flash')
-    
+
     prompt = (
         "Tu es un traducteur littéraire professionnel. "
-        "Traduis le texte suivant de l'anglais vers un français fluide, élégant et naturel.\n"
-        "DIRECTIVES STRICTES DE FORMATAGE :\n"
-        "- N'utilise ABSOLUMENT AUCUN balisage Markdown : JAMAIS d'astérisques (* ou **), JAMAIS de dièses (#), JAMAIS de soulignés (_).\n"
-        "- Les titres d'œuvres, termes étrangers ou mots accentués doivent être écrits en texte brut normal, sans aucun symbole autour.\n"
-        "- Ne rajoute aucune introduction, aucune note ni aucun commentaire.\n\n"
+        "Traduis le texte suivant de l'anglais vers un français fluide, élégant et naturel.\n\n"
+        "CONSIGNES CRITIQUES DE STRUCTURE ET FORMATAGE :\n"
+        "- Conserve STRICTEMENT la disposition aérée et les sauts de paragraphes d'origine.\n"
+        "- Chaque paragraphe et chaque titre de section doit être séparé par un double saut de ligne (\n\n).\n"
+        "- N'aplatis JAMAIS le texte en un seul bloc continu.\n"
+        "- N'utilise AUCUN balisage Markdown : AUCUN astérisque (* ou **), AUCUN dièse (#), AUCUN souligné (_).\n"
+        "- Ne rajoute aucune introduction, note, préambule ou commentaire.\n\n"
         f"Texte à traduire :\n{chunk}"
     )
-    
+
     response = model.generate_content(
         prompt,
         generation_config={"temperature": 0.2}
@@ -186,7 +210,7 @@ def main():
             ["🇫🇷 Document en Français", "🇬🇧 Document en Anglais"],
             on_change=reinitialiser_memoire
         )
-        
+
         st.header("2. Configuration")
         if mode_choisi == "🇬🇧 Document en Anglais":
             st.caption(f"🔑 **{len(pool_cles)} clé(s) active(s)** dans le pool.")
@@ -207,14 +231,14 @@ def main():
     if fichier_upload is not None:
         texte_brut = extraire_texte(fichier_upload)
         texte_propre = nettoyer_texte_source(texte_brut)
-        
+
         if not texte_propre:
             st.error("❌ Le document semble vide ou illisible.")
             return
 
         st.success(f"✅ Extraction réussie ! ({len(texte_propre)} caractères détectés)")
-        
-        with st.expander("📄 Aperçu du texte extrait", expanded=False):
+
+        with st.expander("📄 Aperçu du texte extrait structuré", expanded=False):
             st.text_area("Texte source", value=texte_propre[:2000] + "...", height=150, disabled=True)
 
         # ======================================================================
@@ -223,7 +247,7 @@ def main():
         if mode_choisi == "🇬🇧 Document en Anglais":
             if st.session_state.texte_pret_pour_audio is None:
                 st.subheader("Étape 2 : Traduction en Français")
-                
+
                 if st.button("🚀 Lancer la Traduction IA", type="primary"):
                     if not pool_cles:
                         st.error("🚨 Aucune clé API Google valide trouvée.")
@@ -239,15 +263,14 @@ def main():
                     while i < len(chunks_anglais):
                         pct = int(((i + 1) / len(chunks_anglais)) * 100)
                         barre_progression.progress(
-                            pct, 
+                            pct,
                             text=f"Traduction partie {i + 1}/{len(chunks_anglais)} (Clé #{index_cle + 1}/{len(pool_cles)})..."
                         )
-                        
+
                         cle_active = pool_cles[index_cle]
 
                         try:
                             traduction_brute = traduire_chunk_gemini(chunks_anglais[i], cle_active)
-                            # Nettoyage immédiat post-traduction
                             traduction_propre = nettoyer_texte_pour_audio(traduction_brute)
                             chunks_traduits.append(traduction_propre)
                             i += 1
@@ -255,7 +278,7 @@ def main():
 
                         except Exception as e:
                             erreur_str = str(e).lower()
-                            
+
                             if "429" in erreur_str or "quota" in erreur_str or "resource_exhausted" in erreur_str:
                                 diagnostic = "Quota par minute ou plafond journalier atteint (429)"
                             elif "401" in erreur_str or "invalid authentication" in erreur_str or "access_token_type_unsupported" in erreur_str:
@@ -281,6 +304,7 @@ def main():
                                 )
                                 st.rerun()
 
+                    # Liaison avec double saut pour maintenir la transition entre les morceaux
                     st.session_state.texte_pret_pour_audio = "\n\n".join(chunks_traduits)
                     st.rerun()
 
@@ -296,10 +320,10 @@ def main():
         if st.session_state.texte_pret_pour_audio is not None:
             st.divider()
             st.subheader("Étape Finale : Votre texte Français est prêt ! 🎧")
-            
-            with st.expander("📖 Afficher le texte intégral nettoyé", expanded=True):
+
+            with st.expander("📖 Afficher le texte intégral structuré", expanded=True):
                 st.text_area("Texte Final", value=st.session_state.texte_pret_pour_audio, height=250)
-            
+
             nom_base = fichier_upload.name.rsplit('.', 1)[0]
             st.download_button(
                 label="📄 Télécharger le texte (.txt)",
@@ -313,10 +337,9 @@ def main():
             if st.button("🎙️ Générer le Livre Audio HD", type="primary"):
                 with st.spinner("🔊 Synthèse vocale fluide en cours..."):
                     try:
-                        # Filtrage final de sécurité
                         texte_final_audio = nettoyer_texte_pour_audio(st.session_state.texte_pret_pour_audio)
                         donnees_audio_mp3 = generer_audio_hd(texte_final_audio, voix_technique)
-                        
+
                         st.success("🎉 Livre Audio HD généré avec succès !")
                         st.audio(donnees_audio_mp3, format="audio/mp3")
                         st.download_button(
