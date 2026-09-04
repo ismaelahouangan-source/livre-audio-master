@@ -9,6 +9,9 @@ import re
 import time
 import google.generativeai as genai
 
+# ==============================================================================
+# CONFIGURATION DE LA PAGE & DES VOIX
+# ==============================================================================
 st.set_page_config(
     page_title="Le Studio Master - Traduction & Voix HD",
     page_icon="🎛️",
@@ -22,27 +25,37 @@ VOIX_FRANCAISES = {
     "Rémy (Homme - Clair & Standard)": "fr-FR-RemyNeural"
 }
 
+# ==============================================================================
+# GESTION DE LA MÉMOIRE (SESSION STATE)
+# ==============================================================================
 def reinitialiser_memoire():
     st.session_state.texte_pret_pour_audio = None
 
 if "texte_pret_pour_audio" not in st.session_state:
     st.session_state.texte_pret_pour_audio = None
 
+# ==============================================================================
+# FONCTIONS UTILITAIRES COMMUNES
+# ==============================================================================
 def extraire_texte(fichier_telecharge) -> str:
     nom_fichier = fichier_telecharge.name.lower()
     texte_extrait = ""
+
     if nom_fichier.endswith(".txt"):
-        texte_extrait = fichier_telecharge.read().decode("utf-8", errors="ignore")
+        bytes_data = fichier_telecharge.read()
+        texte_extrait = bytes_data.decode("utf-8", errors="ignore")
     elif nom_fichier.endswith(".pdf"):
         doc = fitz.open(stream=fichier_telecharge.read(), filetype="pdf")
         for page in doc:
             texte_extrait += page.get_text() + "\n"
+
     return texte_extrait.strip()
 
 def nettoyer_texte(texte: str) -> str:
     texte = re.sub(r'(?<![.\!?])\n', ' ', texte)
     texte = re.sub(r'\s+([.,!?:;])', r'\1', texte)
     texte = re.sub(r'(\w+)-\s+(\w+)', r'\1\2', texte)
+    
     corrections = {
         "c h a p i t r e": "chapitre",
         "ber ger": "berger",
@@ -53,9 +66,10 @@ def nettoyer_texte(texte: str) -> str:
     for erreur, correction in corrections.items():
         texte = texte.replace(erreur, correction)
         texte = texte.replace(erreur.capitalize(), correction.capitalize())
-    return re.sub(r'\s+', ' ', texte).strip()
+        
+    texte = re.sub(r'\s+', ' ', texte)
+    return texte.strip()
 
-# Découpage optimisé à 8000 caractères pour réduire drastiquement le nombre d'appels API
 def decouper_texte_en_chunks(texte: str, taille_chunk: int = 8000) -> list:
     if not texte:
         return []
@@ -72,11 +86,31 @@ def decouper_texte_en_chunks(texte: str, taille_chunk: int = 8000) -> list:
         chunks.append(chunk_actuel.strip())
     return chunks
 
+def assainir_cle(cle_brute: str) -> str:
+    """Élimine les résidus de copier-coller Markdown, quotes et espaces."""
+    return (
+        cle_brute.replace(r'\_', '_')
+        .replace('\\', '')
+        .strip()
+        .strip('"')
+        .strip("'")
+    )
+
 def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
-    genai.configure(api_key=api_key.strip())
+    genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-3.6-flash')
-    prompt = f"Tu es un traducteur littéraire. Traduis le texte suivant de l'anglais vers un français fluide et naturel. Ne rajoute aucun commentaire.\n\nTexte :\n{chunk}"
-    response = model.generate_content(prompt, generation_config={"temperature": 0.2})
+    
+    prompt = (
+        "Tu es un traducteur littéraire professionnel. "
+        "Traduis le texte suivant de l'anglais vers un français fluide, élégant et naturel. "
+        "Ne rajoute aucune note, avertissement ou commentaire.\n\n"
+        f"Texte :\n{chunk}"
+    )
+    
+    response = model.generate_content(
+        prompt,
+        generation_config={"temperature": 0.2}
+    )
     return response.text.strip()
 
 async def generer_audio_edge_async(texte: str, voix: str, chemin_sortie: str):
@@ -97,15 +131,19 @@ def generer_audio_hd(texte_francais: str, voix_choisie: str) -> bytes:
 # ==============================================================================
 def main():
     st.title("🎛️ Le Studio Audio Master")
+    st.markdown("Pipeline haute performance : PyMuPDF ➡️ Gemini 3.6 Flash (Pool Multi-clés) ➡️ Edge-TTS HD.")
     st.divider()
 
-    # Récupération automatique du pool de clés depuis secrets.toml
-    cles_config = st.secrets.get("GOOGLE_API_KEYS", None)
-    if cles_config is None:
-        cle_unique = st.secrets.get("GOOGLE_API_KEY", "")
-        pool_cles = [cle_unique] if cle_unique else []
+    # Détection et préparation du pool de clés
+    cles_brutes = st.secrets.get("GOOGLE_API_KEYS", None)
+    if cles_brutes is None:
+        cle_solo = st.secrets.get("GOOGLE_API_KEY", "")
+        pool_initial = [cle_solo] if cle_solo else []
     else:
-        pool_cles = list(cles_config)
+        pool_initial = list(cles_brutes)
+
+    # Nettoyage préventif global
+    pool_cles = [assainir_cle(k) for k in pool_initial if assainir_cle(k)]
 
     with st.sidebar:
         st.header("1. Type de Document")
@@ -117,10 +155,10 @@ def main():
         
         st.header("2. Configuration")
         if mode_choisi == "🇬🇧 Document en Anglais":
-            st.caption(f"🔑 {len(pool_cles)} clé(s) API détectée(s) dans le pool.")
-            cle_manuelle = st.text_input("Ajouter/Remplacer par une clé manuelle :", type="password")
+            st.caption(f"🔑 **{len(pool_cles)} clé(s) active(s)** dans le pool.")
+            cle_manuelle = st.text_input("Remplacer temporairement par une clé :", type="password")
             if cle_manuelle.strip():
-                pool_cles = [cle_manuelle.strip()]
+                pool_cles = [assainir_cle(cle_manuelle)]
 
         choix_nom_voix = st.selectbox("Narrateur HD :", options=list(VOIX_FRANCAISES.keys()))
         voix_technique = VOIX_FRANCAISES[choix_nom_voix]
@@ -129,6 +167,7 @@ def main():
             reinitialiser_memoire()
             st.rerun()
 
+    # --- CORPS PRINCIPAL ---
     st.subheader(f"Étape 1 : Charger votre fichier ({mode_choisi.split(' ')[2]})")
     fichier_upload = st.file_uploader("Fichier .txt ou .pdf", type=["txt", "pdf"])
 
@@ -140,64 +179,92 @@ def main():
             st.error("❌ Le document semble vide ou illisible.")
             return
 
-        st.success(f"✅ Extraction et nettoyage réussis ! ({len(texte_propre)} caractères)")
+        st.success(f"✅ Extraction et nettoyage réussis ! ({len(texte_propre)} caractères détectés)")
+        
+        with st.expander("📄 Aperçu du texte extrait du fichier", expanded=False):
+            st.text_area("Texte extrait", value=texte_propre[:2000] + "...", height=150, disabled=True)
 
-        # MODE ANGLAIS AVEC FAILOVER MULTI-CLÉS
+        # ======================================================================
+        # BRANCHE A : MODE ANGLAIS AVEC FAILOVER IMMUNISÉ
+        # ======================================================================
         if mode_choisi == "🇬🇧 Document en Anglais":
             if st.session_state.texte_pret_pour_audio is None:
                 st.subheader("Étape 2 : Traduction en Français")
+                
                 if st.button("🚀 Lancer la Traduction IA", type="primary"):
-                    if not pool_cles or not pool_cles[0].strip():
-                        st.error("🚨 Aucune clé API Google valide n'a été configurée.")
+                    if not pool_cles:
+                        st.error("🚨 Aucune clé API Google valide trouvée dans les Secrets ou la saisie manuelle.")
                         return
 
                     chunks_anglais = decouper_texte_en_chunks(texte_propre, taille_chunk=8000)
                     chunks_traduits = []
-                    barre_progression = st.progress(0, text="Démarrage...")
+                    barre_progression = st.progress(0, text="Initialisation...")
 
                     index_cle = 0
                     i = 0
-                    
+
                     while i < len(chunks_anglais):
                         pct = int(((i + 1) / len(chunks_anglais)) * 100)
-                        barre_progression.progress(pct, text=f"Traduction partie {i + 1}/{len(chunks_anglais)} (Clé #{index_cle + 1})...")
+                        barre_progression.progress(
+                            pct, 
+                            text=f"Traduction partie {i + 1}/{len(chunks_anglais)} (via Clé #{index_cle + 1}/{len(pool_cles)})..."
+                        )
                         
+                        cle_active = pool_cles[index_cle]
+
                         try:
-                            traduction = traduire_chunk_gemini(chunks_anglais[i], pool_cles[index_cle])
+                            traduction = traduire_chunk_gemini(chunks_anglais[i], cle_active)
                             chunks_traduits.append(traduction)
-                            i += 1  # Passe au morceau suivant en cas de succès
+                            i += 1  # Morceau validé, on avance
                             time.sleep(1)
+
                         except Exception as e:
                             erreur_str = str(e).lower()
-                            # Détection de dépassement de quota (429 / resource exhausted)
+                            
+                            # Diagnostic précis de la cause
                             if "429" in erreur_str or "quota" in erreur_str or "resource_exhausted" in erreur_str:
-                                if index_cle + 1 < len(pool_cles):
-                                    index_cle += 1
-                                    st.warning(f"⚠️ Quota atteint pour la clé #{index_cle}. Bascule automatique vers la clé #{index_cle + 1}...")
-                                    time.sleep(2)
-                                    # La boucle réessaie le même morceau i avec la nouvelle clé
-                                else:
-                                    # Sauvegarde des parties déjà traduites pour ne rien perdre
-                                    if chunks_traduits:
-                                        st.session_state.texte_pret_pour_audio = "\n\n".join(chunks_traduits)
-                                    st.error("❌ Toutes les clés API ont épuisé leur quota. Les morceaux déjà traduits ont été sauvegardés ci-dessous.")
-                                    st.rerun()
+                                diagnostic = "Quota par minute ou plafond journalier atteint (Erreur 429)"
+                            elif "401" in erreur_str or "invalid authentication" in erreur_str or "access_token_type_unsupported" in erreur_str:
+                                diagnostic = "Clé invalide, révoquée ou format corrompu (Erreur 401)"
+                            elif "403" in erreur_str or "permission_denied" in erreur_str:
+                                diagnostic = "Permission refusée ou restrictions de l'API (Erreur 403)"
                             else:
-                                st.error(f"❌ Erreur inattendue : {str(e)}")
-                                return
+                                diagnostic = f"Erreur de service ({str(e)[:120]})"
+
+                            # Bascule sur la clé suivante
+                            if index_cle + 1 < len(pool_cles):
+                                st.warning(
+                                    f"⚠️ **Clé #{index_cle + 1} écartée** : {diagnostic}. "
+                                    f"Bascule immédiate sur la **Clé #{index_cle + 2}**..."
+                                )
+                                index_cle += 1
+                                time.sleep(1.5)
+                            else:
+                                if chunks_traduits:
+                                    st.session_state.texte_pret_pour_audio = "\n\n".join(chunks_traduits)
+                                st.error(
+                                    f"🚨 **Échec définitif sur la Clé #{index_cle + 1}** : {diagnostic}. "
+                                    "Toutes les clés enregistrées ont été consommées ou rejetées."
+                                )
+                                st.rerun()
 
                     st.session_state.texte_pret_pour_audio = "\n\n".join(chunks_traduits)
                     st.rerun()
 
+        # ======================================================================
+        # BRANCHE B : MODE FRANÇAIS
+        # ======================================================================
         elif mode_choisi == "🇫🇷 Document en Français":
             st.session_state.texte_pret_pour_audio = texte_propre
 
+        # ======================================================================
         # ÉTAPE COMMUNE : AUDIO ET TÉLÉCHARGEMENT
+        # ======================================================================
         if st.session_state.texte_pret_pour_audio is not None:
             st.divider()
             st.subheader("Étape Finale : Votre texte Français est prêt ! 🎧")
             
-            with st.expander("📖 Afficher le texte intégral", expanded=True):
+            with st.expander("📖 Afficher le texte intégral (prêt à être lu)", expanded=True):
                 st.text_area("Texte Final", value=st.session_state.texte_pret_pour_audio, height=250)
             
             nom_base = fichier_upload.name.rsplit('.', 1)[0]
