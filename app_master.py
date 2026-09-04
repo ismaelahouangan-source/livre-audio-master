@@ -19,8 +19,8 @@ st.set_page_config(
 )
 
 VOIX_FRANCAISES = {
-    "Henri (Homme - Voix de narrateur grave)": "fr-FR-HenriNeural",
     "Denise (Femme - Douce & Naturelle)": "fr-FR-DeniseNeural",
+    "Henri (Homme - Voix de narrateur grave)": "fr-FR-HenriNeural",
     "Eloise (Femme - Dynamique & Claire)": "fr-FR-EloiseNeural",
     "Rémy (Homme - Clair & Standard)": "fr-FR-RemyNeural"
 }
@@ -35,7 +35,7 @@ if "texte_pret_pour_audio" not in st.session_state:
     st.session_state.texte_pret_pour_audio = None
 
 # ==============================================================================
-# FONCTIONS UTILITAIRES COMMUNES
+# FONCTIONS DE NETTOYAGE ET D'EXTRACTION
 # ==============================================================================
 def extraire_texte(fichier_telecharge) -> str:
     nom_fichier = fichier_telecharge.name.lower()
@@ -51,7 +51,8 @@ def extraire_texte(fichier_telecharge) -> str:
 
     return texte_extrait.strip()
 
-def nettoyer_texte(texte: str) -> str:
+def nettoyer_texte_source(texte: str) -> str:
+    """Prépare le texte brut extrait du document (supprime sauts de ligne intempestifs et césures)."""
     texte = re.sub(r'(?<![.\!?])\n', ' ', texte)
     texte = re.sub(r'\s+([.,!?:;])', r'\1', texte)
     texte = re.sub(r'(\w+)-\s+(\w+)', r'\1\2', texte)
@@ -68,6 +69,39 @@ def nettoyer_texte(texte: str) -> str:
         texte = texte.replace(erreur.capitalize(), correction.capitalize())
         
     texte = re.sub(r'\s+', ' ', texte)
+    return texte.strip()
+
+def nettoyer_texte_pour_audio(texte: str) -> str:
+    """
+    Élimine tous les artefacts nuisibles à la synthèse vocale (astérisques, balises, etc.).
+    """
+    if not texte:
+        return ""
+
+    # 1. Suppression intégrale des astérisques (italique/gras Markdown)
+    texte = texte.replace("*", "")
+
+    # 2. Suppression des soulignés Markdown isolés (_mot_)
+    texte = re.sub(r'(?<=\s)_(?=\S)|(?<=\S)_(?=\s)', '', texte)
+    texte = texte.replace("_", " ")
+
+    # 3. Suppression des titres Markdown (#, ##, ###)
+    texte = re.sub(r'^[#\s]+', '', texte, flags=re.MULTILINE)
+
+    # 4. Suppression du chiffre romain 'I' isolé en début de document (évite la lettre 'i')
+    texte = re.sub(r'^\s*I\s*\n', '', texte)
+
+    # 5. Normalisation des tirets cadratins et demi-cadratins pour une respiration naturelle
+    texte = re.sub(r'\s*[—–]\s*', ', ', texte)
+    texte = re.sub(r'^\s*[—–]\s*', '', texte, flags=re.MULTILINE)
+
+    # 6. Harmonisation des guillemets
+    texte = texte.replace("«", '"').replace("»", '"').replace("“", '"').replace("”", '"')
+
+    # 7. Nettoyage des points de suspension excessifs et espaces multiples
+    texte = re.sub(r'\.{4,}', '...', texte)
+    texte = re.sub(r'\s+', ' ', texte)
+
     return texte.strip()
 
 def decouper_texte_en_chunks(texte: str, taille_chunk: int = 8000) -> list:
@@ -87,7 +121,6 @@ def decouper_texte_en_chunks(texte: str, taille_chunk: int = 8000) -> list:
     return chunks
 
 def assainir_cle(cle_brute: str) -> str:
-    """Élimine les résidus de copier-coller Markdown, quotes et espaces."""
     return (
         cle_brute.replace(r'\_', '_')
         .replace('\\', '')
@@ -102,9 +135,12 @@ def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
     
     prompt = (
         "Tu es un traducteur littéraire professionnel. "
-        "Traduis le texte suivant de l'anglais vers un français fluide, élégant et naturel. "
-        "Ne rajoute aucune note, avertissement ou commentaire.\n\n"
-        f"Texte :\n{chunk}"
+        "Traduis le texte suivant de l'anglais vers un français fluide, élégant et naturel.\n"
+        "DIRECTIVES STRICTES DE FORMATAGE :\n"
+        "- N'utilise ABSOLUMENT AUCUN balisage Markdown : JAMAIS d'astérisques (* ou **), JAMAIS de dièses (#), JAMAIS de soulignés (_).\n"
+        "- Les titres d'œuvres, termes étrangers ou mots accentués doivent être écrits en texte brut normal, sans aucun symbole autour.\n"
+        "- Ne rajoute aucune introduction, aucune note ni aucun commentaire.\n\n"
+        f"Texte à traduire :\n{chunk}"
     )
     
     response = model.generate_content(
@@ -134,7 +170,6 @@ def main():
     st.markdown("Pipeline haute performance : PyMuPDF ➡️ Gemini 3.6 Flash (Pool Multi-clés) ➡️ Edge-TTS HD.")
     st.divider()
 
-    # Détection et préparation du pool de clés
     cles_brutes = st.secrets.get("GOOGLE_API_KEYS", None)
     if cles_brutes is None:
         cle_solo = st.secrets.get("GOOGLE_API_KEY", "")
@@ -142,7 +177,6 @@ def main():
     else:
         pool_initial = list(cles_brutes)
 
-    # Nettoyage préventif global
     pool_cles = [assainir_cle(k) for k in pool_initial if assainir_cle(k)]
 
     with st.sidebar:
@@ -167,25 +201,24 @@ def main():
             reinitialiser_memoire()
             st.rerun()
 
-    # --- CORPS PRINCIPAL ---
     st.subheader(f"Étape 1 : Charger votre fichier ({mode_choisi.split(' ')[2]})")
     fichier_upload = st.file_uploader("Fichier .txt ou .pdf", type=["txt", "pdf"])
 
     if fichier_upload is not None:
         texte_brut = extraire_texte(fichier_upload)
-        texte_propre = nettoyer_texte(texte_brut)
+        texte_propre = nettoyer_texte_source(texte_brut)
         
         if not texte_propre:
             st.error("❌ Le document semble vide ou illisible.")
             return
 
-        st.success(f"✅ Extraction et nettoyage réussis ! ({len(texte_propre)} caractères détectés)")
+        st.success(f"✅ Extraction réussie ! ({len(texte_propre)} caractères détectés)")
         
-        with st.expander("📄 Aperçu du texte extrait du fichier", expanded=False):
-            st.text_area("Texte extrait", value=texte_propre[:2000] + "...", height=150, disabled=True)
+        with st.expander("📄 Aperçu du texte extrait", expanded=False):
+            st.text_area("Texte source", value=texte_propre[:2000] + "...", height=150, disabled=True)
 
         # ======================================================================
-        # BRANCHE A : MODE ANGLAIS AVEC FAILOVER IMMUNISÉ
+        # BRANCHE A : MODE ANGLAIS
         # ======================================================================
         if mode_choisi == "🇬🇧 Document en Anglais":
             if st.session_state.texte_pret_pour_audio is None:
@@ -193,7 +226,7 @@ def main():
                 
                 if st.button("🚀 Lancer la Traduction IA", type="primary"):
                     if not pool_cles:
-                        st.error("🚨 Aucune clé API Google valide trouvée dans les Secrets ou la saisie manuelle.")
+                        st.error("🚨 Aucune clé API Google valide trouvée.")
                         return
 
                     chunks_anglais = decouper_texte_en_chunks(texte_propre, taille_chunk=8000)
@@ -207,31 +240,31 @@ def main():
                         pct = int(((i + 1) / len(chunks_anglais)) * 100)
                         barre_progression.progress(
                             pct, 
-                            text=f"Traduction partie {i + 1}/{len(chunks_anglais)} (via Clé #{index_cle + 1}/{len(pool_cles)})..."
+                            text=f"Traduction partie {i + 1}/{len(chunks_anglais)} (Clé #{index_cle + 1}/{len(pool_cles)})..."
                         )
                         
                         cle_active = pool_cles[index_cle]
 
                         try:
-                            traduction = traduire_chunk_gemini(chunks_anglais[i], cle_active)
-                            chunks_traduits.append(traduction)
-                            i += 1  # Morceau validé, on avance
+                            traduction_brute = traduire_chunk_gemini(chunks_anglais[i], cle_active)
+                            # Nettoyage immédiat post-traduction
+                            traduction_propre = nettoyer_texte_pour_audio(traduction_brute)
+                            chunks_traduits.append(traduction_propre)
+                            i += 1
                             time.sleep(1)
 
                         except Exception as e:
                             erreur_str = str(e).lower()
                             
-                            # Diagnostic précis de la cause
                             if "429" in erreur_str or "quota" in erreur_str or "resource_exhausted" in erreur_str:
-                                diagnostic = "Quota par minute ou plafond journalier atteint (Erreur 429)"
+                                diagnostic = "Quota par minute ou plafond journalier atteint (429)"
                             elif "401" in erreur_str or "invalid authentication" in erreur_str or "access_token_type_unsupported" in erreur_str:
-                                diagnostic = "Clé invalide, révoquée ou format corrompu (Erreur 401)"
+                                diagnostic = "Clé invalide, révoquée ou format corrompu (401)"
                             elif "403" in erreur_str or "permission_denied" in erreur_str:
-                                diagnostic = "Permission refusée ou restrictions de l'API (Erreur 403)"
+                                diagnostic = "Permission refusée ou restrictions de l'API (403)"
                             else:
                                 diagnostic = f"Erreur de service ({str(e)[:120]})"
 
-                            # Bascule sur la clé suivante
                             if index_cle + 1 < len(pool_cles):
                                 st.warning(
                                     f"⚠️ **Clé #{index_cle + 1} écartée** : {diagnostic}. "
@@ -244,7 +277,7 @@ def main():
                                     st.session_state.texte_pret_pour_audio = "\n\n".join(chunks_traduits)
                                 st.error(
                                     f"🚨 **Échec définitif sur la Clé #{index_cle + 1}** : {diagnostic}. "
-                                    "Toutes les clés enregistrées ont été consommées ou rejetées."
+                                    "Toutes les clés du pool ont été consommées."
                                 )
                                 st.rerun()
 
@@ -255,7 +288,7 @@ def main():
         # BRANCHE B : MODE FRANÇAIS
         # ======================================================================
         elif mode_choisi == "🇫🇷 Document en Français":
-            st.session_state.texte_pret_pour_audio = texte_propre
+            st.session_state.texte_pret_pour_audio = nettoyer_texte_pour_audio(texte_propre)
 
         # ======================================================================
         # ÉTAPE COMMUNE : AUDIO ET TÉLÉCHARGEMENT
@@ -264,12 +297,12 @@ def main():
             st.divider()
             st.subheader("Étape Finale : Votre texte Français est prêt ! 🎧")
             
-            with st.expander("📖 Afficher le texte intégral (prêt à être lu)", expanded=True):
+            with st.expander("📖 Afficher le texte intégral nettoyé", expanded=True):
                 st.text_area("Texte Final", value=st.session_state.texte_pret_pour_audio, height=250)
             
             nom_base = fichier_upload.name.rsplit('.', 1)[0]
             st.download_button(
-                label="📄 Télécharger le texte traduit (.txt)",
+                label="📄 Télécharger le texte (.txt)",
                 data=st.session_state.texte_pret_pour_audio,
                 file_name=f"Texte_FR_{nom_base}.txt",
                 mime="text/plain",
@@ -278,9 +311,12 @@ def main():
 
             st.write("---")
             if st.button("🎙️ Générer le Livre Audio HD", type="primary"):
-                with st.spinner("🔊 Enregistrement studio en cours..."):
+                with st.spinner("🔊 Synthèse vocale fluide en cours..."):
                     try:
-                        donnees_audio_mp3 = generer_audio_hd(st.session_state.texte_pret_pour_audio, voix_technique)
+                        # Filtrage final de sécurité
+                        texte_final_audio = nettoyer_texte_pour_audio(st.session_state.texte_pret_pour_audio)
+                        donnees_audio_mp3 = generer_audio_hd(texte_final_audio, voix_technique)
+                        
                         st.success("🎉 Livre Audio HD généré avec succès !")
                         st.audio(donnees_audio_mp3, format="audio/mp3")
                         st.download_button(
