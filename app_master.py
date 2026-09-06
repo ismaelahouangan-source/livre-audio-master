@@ -19,8 +19,8 @@ st.set_page_config(
 )
 
 VOIX_FRANCAISES = {
-    "Denise (Femme - Douce & Naturelle)": "fr-FR-DeniseNeural",
     "Henri (Homme - Voix de narrateur grave)": "fr-FR-HenriNeural",
+    "Denise (Femme - Douce & Naturelle)": "fr-FR-DeniseNeural",
     "Eloise (Femme - Dynamique & Claire)": "fr-FR-EloiseNeural",
     "Rémy (Homme - Clair & Standard)": "fr-FR-RemyNeural"
 }
@@ -56,14 +56,9 @@ def nettoyer_texte_source(texte: str) -> str:
     Supprime les coupures de ligne artificielles des PDF tout en préservant
     les vrais sauts de paragraphe.
     """
-    # 1. Répare les césures de mots coupés en fin de ligne (ex: "com- pulsive" -> "compulsive")
     texte = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', texte)
-
-    # 2. Fusionne les retours à la ligne simples internes à une même phrase
-    # (Un saut de ligne qui n'est ni précédé ni suivi d'un autre saut de ligne devient un espace)
     texte = re.sub(r'(?<!\n)\n(?!\n)', ' ', texte)
 
-    # 3. Corrections orthographiques courantes d'extraction
     corrections = {
         "c h a p i t r e": "chapitre",
         "ber ger": "berger",
@@ -75,50 +70,44 @@ def nettoyer_texte_source(texte: str) -> str:
         texte = texte.replace(erreur, correction)
         texte = texte.replace(erreur.capitalize(), correction.capitalize())
 
-    # 4. Nettoyage des espaces horizontaux seuls (conserve les sauts de ligne verticaux)
     texte = re.sub(r'[ \t]+', ' ', texte)
     texte = re.sub(r'\n{3,}', '\n\n', texte)
     return texte.strip()
 
 def nettoyer_texte_pour_audio(texte: str) -> str:
     """
-    Élimine les symboles parasites pour la synthèse vocale sans écraser la mise en page.
+    Élimine les symboles parasites pour la synthèse vocale, 
+    et corrige le bug de l'horloge pour les références bibliques.
     """
     if not texte:
         return ""
 
-    # 1. Suppression des astérisques Markdown
+    # 1. Correction majeure : "38:4" -> "38, 4" pour éviter que la voix ne lise "38 heures 4"
+    texte = re.sub(r'(\d+):(\d+)', r'\1, \2', texte)
+
+    # 2. Suppression TOTALE des astérisques et balises Markdown
     texte = texte.replace("*", "")
-
-    # 2. Nettoyage des balises Markdown de titres (#) en début de ligne
     texte = re.sub(r'^#+\s*', '', texte, flags=re.MULTILINE)
-
-    # 3. Suppression des soulignés isolés (_mot_)
     texte = re.sub(r'(?<=\s)_(?=\S)|(?<=\S)_(?=\s)', '', texte)
     texte = texte.replace("_", "")
 
-    # 4. Suppression du chiffre romain 'I' isolé en tête de document
+    # 3. Suppression du chiffre romain 'I' isolé en tête de document
     texte = re.sub(r'^\s*I\s*\n+', '', texte)
 
-    # 5. Normalisation des tirets cadratins pour des pauses orales naturelles
+    # 4. Normalisation des tirets cadratins et des guillemets
     texte = re.sub(r'\s*[—–]\s*', ', ', texte)
     texte = re.sub(r'^\s*[—–]\s*', '', texte, flags=re.MULTILINE)
-
-    # 6. Standardisation des guillemets
     texte = texte.replace("«", '"').replace("»", '"').replace("“", '"').replace("”", '"')
 
-    # 7. Préservation stricte de la structure des paragraphes
-    texte = re.sub(r'[ \t]+', ' ', texte)            # Espaces multiples horizontaux
-    texte = re.sub(r' +(?=\n)', '', texte)           # Espaces résiduels avant un saut
-    texte = re.sub(r'\n\s*\n', '\n\n', texte)       # Uniformisation des lignes vides
-    texte = re.sub(r'\n{3,}', '\n\n', texte)         # Maximum 2 sauts consécutifs
+    # 5. Préservation stricte de la structure des paragraphes
+    texte = re.sub(r'[ \t]+', ' ', texte)            
+    texte = re.sub(r' +(?=\n)', '', texte)           
+    texte = re.sub(r'\n\s*\n', '\n\n', texte)       
+    texte = re.sub(r'\n{3,}', '\n\n', texte)         
 
     return texte.strip()
 
 def decouper_texte_en_chunks(texte: str, taille_chunk: int = 8000) -> list:
-    """
-    Découpe le texte en respectant rigoureusement les frontières de paragraphes.
-    """
     if not texte:
         return []
     
@@ -153,17 +142,19 @@ def assainir_cle(cle_brute: str) -> str:
 
 def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-3.6-flash')
+    # MISE À JOUR : Le tout nouveau modèle Gemini 3.8 Flash
+    model = genai.GenerativeModel('gemini-3.8-flash')
 
     prompt = (
-        "Tu es un traducteur littéraire professionnel. "
+        "Tu es un traducteur littéraire professionnel et un éditeur méticuleux. "
         "Traduis le texte suivant de l'anglais vers un français fluide, élégant et naturel.\n\n"
-        "CONSIGNES CRITIQUES DE STRUCTURE ET FORMATAGE :\n"
+        "CONSIGNES CRITIQUES DE NETTOYAGE ET DE FORMATAGE :\n"
+        "- SUPPRIME INTÉGRALEMENT toutes les notes de bas de page (les blocs de texte à la fin du document ou des pages qui commencent par des numéros). Ne les traduis surtout pas.\n"
+        "- IGNORE ET SUPPRIME tous les appels de notes (les petits numéros isolés dans le texte qui renvoient à ces notes de bas de page).\n"
         "- Conserve STRICTEMENT la disposition aérée et les sauts de paragraphes d'origine.\n"
-        "- Chaque paragraphe et chaque titre de section doit être séparé par un double saut de ligne (\n\n).\n"
-        "- N'aplatis JAMAIS le texte en un seul bloc continu.\n"
+        "- Chaque paragraphe et chaque titre de section doit être séparé par un double saut de ligne (\\n\\n).\n"
         "- N'utilise AUCUN balisage Markdown : AUCUN astérisque (* ou **), AUCUN dièse (#), AUCUN souligné (_).\n"
-        "- Ne rajoute aucune introduction, note, préambule ou commentaire.\n\n"
+        "- Ne rajoute aucune introduction, conclusion ou commentaire personnel.\n\n"
         f"Texte à traduire :\n{chunk}"
     )
 
@@ -191,7 +182,7 @@ def generer_audio_hd(texte_francais: str, voix_choisie: str) -> bytes:
 # ==============================================================================
 def main():
     st.title("🎛️ Le Studio Audio Master")
-    st.markdown("Pipeline haute performance : PyMuPDF ➡️ Gemini 3.6 Flash (Pool Multi-clés) ➡️ Edge-TTS HD.")
+    st.markdown("Pipeline haute performance : PyMuPDF ➡️ Gemini 3.8 Flash ➡️ Edge-TTS HD.")
     st.divider()
 
     cles_brutes = st.secrets.get("GOOGLE_API_KEYS", None)
@@ -255,7 +246,7 @@ def main():
 
                     chunks_anglais = decouper_texte_en_chunks(texte_propre, taille_chunk=8000)
                     chunks_traduits = []
-                    barre_progression = st.progress(0, text="Initialisation...")
+                    barre_progression = st.progress(0, text="Initialisation de Gemini 3.8 Flash...")
 
                     index_cle = 0
                     i = 0
@@ -304,7 +295,6 @@ def main():
                                 )
                                 st.rerun()
 
-                    # Liaison avec double saut pour maintenir la transition entre les morceaux
                     st.session_state.texte_pret_pour_audio = "\n\n".join(chunks_traduits)
                     st.rerun()
 
