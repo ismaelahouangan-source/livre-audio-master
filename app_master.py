@@ -141,7 +141,7 @@ def assainir_cle(cle_brute: str) -> str:
 
 def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
     genai.configure(api_key=api_key)
-    # Utilisation du modèle stable et économique
+    # Moteur configuré sur Gemini 3.6 Flash
     model = genai.GenerativeModel('gemini-3.6-flash')
 
     prompt = (
@@ -268,6 +268,7 @@ def main():
 
                         except Exception as e:
                             erreur_str = str(e).lower()
+                            raw_error = str(e)
 
                             if "429" in erreur_str or "quota" in erreur_str or "resource_exhausted" in erreur_str:
                                 diagnostic = "Quota par minute ou plafond journalier atteint (429)"
@@ -278,10 +279,12 @@ def main():
                             else:
                                 diagnostic = f"Erreur de service ({str(e)[:120]})"
 
+                            # Affichage de l'avertissement avec le texte d'erreur original complet
                             if index_cle + 1 < len(pool_cles):
                                 st.warning(
                                     f"⚠️ **Clé #{index_cle + 1} écartée** : {diagnostic}. "
-                                    f"Bascule immédiate sur la **Clé #{index_cle + 2}**..."
+                                    f"Bascule immédiate sur la **Clé #{index_cle + 2}**...\n\n"
+                                    f"**Message d'erreur brut de Google :**\n```text\n{raw_error}\n```"
                                 )
                                 index_cle += 1
                                 time.sleep(1.5)
@@ -289,7 +292,8 @@ def main():
                                 if chunks_traduits:
                                     st.session_state.texte_pret_pour_audio = "\n\n".join(chunks_traduits)
                                 st.error(
-                                    f"🚨 **Échec définitif sur la Clé #{index_cle + 1}** : {diagnostic}. "
+                                    f"🚨 **Échec définitif sur la Clé #{index_cle + 1}** : {diagnostic}.\n\n"
+                                    f"**Message d'erreur brut de Google :**\n```text\n{raw_error}\n```\n\n"
                                     "Toutes les clés du pool ont été consommées."
                                 )
                                 st.rerun()
