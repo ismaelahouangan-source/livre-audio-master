@@ -79,10 +79,10 @@ def nettoyer_texte_pour_audio(texte: str) -> str:
     if not texte:
         return ""
 
-    # 1. Correction des références bibliques et séparateurs chiffres
+    # 1. Correction des références bibliques et séparateurs de chiffres
     texte = re.sub(r'(\d+):(\d+)', r'\1, \2', texte)
 
-    # 2. Élimination totale des balises et symboles Markdown
+    # 2. Élimination des symboles et balises Markdown
     texte = texte.replace("*", "")
     texte = re.sub(r'^#+\s*', '', texte, flags=re.MULTILINE)
     texte = re.sub(r'(?<=\s)_(?=\S)|(?<=\S)_(?=\s)', '', texte)
@@ -91,12 +91,12 @@ def nettoyer_texte_pour_audio(texte: str) -> str:
     # 3. Élimination du chiffre romain 'I' isolé en tête de document
     texte = re.sub(r'^\s*I\s*\n+', '', texte)
 
-    # 4. Standardisation des tirets et guillemets pour des pauses naturelles
+    # 4. Standardisation des tirets et guillemets pour des pauses orales naturelles
     texte = re.sub(r'\s*[—–]\s*', ', ', texte)
     texte = re.sub(r'^\s*[—–]\s*', '', texte, flags=re.MULTILINE)
     texte = texte.replace("«", '"').replace("»", '"').replace("“", '"').replace("”", '"')
 
-    # 5. Préservation des alinéas et paragraphes aérés
+    # 5. Préservation des alinéas et paragraphes
     texte = re.sub(r'[ \t]+', ' ', texte)
     texte = re.sub(r' +(?=\n)', '', texte)
     texte = re.sub(r'\n\s*\n', '\n\n', texte)
@@ -141,8 +141,8 @@ def assainir_cle(cle_brute: str) -> str:
 
 def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
     genai.configure(api_key=api_key)
-    # Moteur configuré sur Gemini 3.6 Flash
-    model = genai.GenerativeModel('gemini-3.6-flash')
+    # Moteur configuré sur Gemini 3.7 Flash
+    model = genai.GenerativeModel('gemini-3.7-flash')
 
     prompt = (
         "Tu es un traducteur littéraire professionnel et un éditeur méticuleux. "
@@ -181,7 +181,7 @@ def generer_audio_hd(texte_francais: str, voix_choisie: str) -> bytes:
 # ==============================================================================
 def main():
     st.title("🎛️ Le Studio Audio Master")
-    st.markdown("Pipeline haute performance : PyMuPDF ➡️ Gemini 3.6 Flash ➡️ Edge-TTS HD.")
+    st.markdown("Pipeline haute performance : PyMuPDF ➡️ Gemini 3.7 Flash ➡️ Edge-TTS HD.")
     st.divider()
 
     cles_brutes = st.secrets.get("GOOGLE_API_KEYS", None)
@@ -245,7 +245,7 @@ def main():
 
                     chunks_anglais = decouper_texte_en_chunks(texte_propre, taille_chunk=8000)
                     chunks_traduits = []
-                    barre_progression = st.progress(0, text="Initialisation de Gemini 3.6 Flash...")
+                    barre_progression = st.progress(0, text="Initialisation de Gemini 3.7 Flash...")
 
                     index_cle = 0
                     i = 0
@@ -279,7 +279,7 @@ def main():
                             else:
                                 diagnostic = f"Erreur de service ({str(e)[:120]})"
 
-                            # Affichage de l'avertissement avec le texte d'erreur original complet
+                            # Basculement avec affichage du retour d'erreur brut
                             if index_cle + 1 < len(pool_cles):
                                 st.warning(
                                     f"⚠️ **Clé #{index_cle + 1} écartée** : {diagnostic}. "
