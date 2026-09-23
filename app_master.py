@@ -141,8 +141,8 @@ def assainir_cle(cle_brute: str) -> str:
 
 def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
     genai.configure(api_key=api_key)
-    # Intégration du modèle Gemini 3.7 Flash
-    model = genai.GenerativeModel('gemini-3.7-flash')
+    # Utilisation du modèle stable et économique
+    model = genai.GenerativeModel('gemini-3.6-flash')
 
     prompt = (
         "Tu es un traducteur littéraire professionnel et un éditeur méticuleux. "
@@ -181,7 +181,7 @@ def generer_audio_hd(texte_francais: str, voix_choisie: str) -> bytes:
 # ==============================================================================
 def main():
     st.title("🎛️ Le Studio Audio Master")
-    st.markdown("Pipeline haute performance : PyMuPDF ➡️ Gemini 3.7 Flash ➡️ Edge-TTS HD.")
+    st.markdown("Pipeline haute performance : PyMuPDF ➡️ Gemini 3.6 Flash ➡️ Edge-TTS HD.")
     st.divider()
 
     cles_brutes = st.secrets.get("GOOGLE_API_KEYS", None)
@@ -245,7 +245,7 @@ def main():
 
                     chunks_anglais = decouper_texte_en_chunks(texte_propre, taille_chunk=8000)
                     chunks_traduits = []
-                    barre_progression = st.progress(0, text="Initialisation de Gemini 3.7 Flash...")
+                    barre_progression = st.progress(0, text="Initialisation de Gemini 3.6 Flash...")
 
                     index_cle = 0
                     i = 0
