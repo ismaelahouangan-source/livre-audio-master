@@ -35,7 +35,7 @@ if "texte_pret_pour_audio" not in st.session_state:
     st.session_state.texte_pret_pour_audio = None
 
 # ==============================================================================
-# EXTRACTION ET PRÉ-TRAITEMENT ÉDITORIAL (ANTI-NOTES)
+# EXTRACTION ET FILTRAGE ÉDITORIAL CHIRURGICAL
 # ==============================================================================
 def extraire_texte(fichier_telecharge) -> str:
     nom_fichier = fichier_telecharge.name.lower()
@@ -53,43 +53,63 @@ def extraire_texte(fichier_telecharge) -> str:
 
 def filtrer_notes_et_artefacts(texte: str) -> str:
     """
-    Supprime les blocs de notes de bas de page et les appels de notes
-    avant l'envoi à DeepL.
+    1. Coupe le bloc de notes en fin de document même sans en-tête.
+    2. Supprime uniquement les appels de notes collés (ex: mot2, mot.3) sans toucher aux pourcentages ou chiffres séparés.
     """
-    # 1. Élimination des sections entières de notes de bas de page en fin de document
+    if not texte:
+        return ""
+
+    # 1. Élimination du bloc de notes final (numéroté 1, 2, 3...) situé dans le dernier tiers du document
     lignes = texte.split("\n")
     lignes_filtrees = []
-    ignorer_fin = False
+    index_coupure = len(lignes)
 
     pattern_section_notes = re.compile(
         r'^\s*(notes?\s+de\s+bas\s+de\s+page|footnotes?|notes?)\s*$', 
         re.IGNORECASE
     )
 
-    for ligne in lignes:
-        if pattern_section_notes.match(ligne):
-            ignorer_fin = True
+    for idx, ligne in enumerate(lignes):
+        ligne_strip = ligne.strip()
+        # Si un en-tête explicite apparaît
+        if pattern_section_notes.match(ligne_strip):
+            index_coupure = idx
             break
-        # Si une ligne démarre par un chiffre de note isolé (ex: "15. En raison du manque de place...")
-        if re.match(r'^\s*\d{1,3}\.\s+[A-ZÀ-ÖØ-ß]', ligne) and len(lignes_filtrees) > 20:
-            # On vérifie si les lignes précédentes ressemblaient déjà à des notes
-            continue
-        lignes_filtrees.append(ligne)
+        # Si la note démarre par '1 ' ou '1.' vers la fin du texte (> 60% du document)
+        if idx > len(lignes) * 0.6 and re.match(r'^[1I]\s*[\.\-\)]\s+[A-ZÀ-ÖØ-ß]', ligne_strip):
+            # Vérifie si les lignes suivantes continuent la séquence numérique (2, 3...)
+            texte_suivant = "\n".join(lignes[idx:idx+15])
+            if re.search(r'\n[2]\s*[\.\-\)]', texte_suivant):
+                index_coupure = idx
+                break
 
+    lignes_filtrees = lignes[:index_coupure]
     texte_assaini = "\n".join(lignes_filtrees)
 
-    # 2. Suppression des appels de notes numériques collés aux mots ou aux ponctuations (ex: "doctrine.15", "elohim.4")
-    texte_assaini = re.sub(r'(?<=[a-zA-ZÀ-ÿ.,;:?!])\s*(\d{1,3})(?=\s|[.,;:?!]|$)', '', texte_assaini)
+    # 2. Suppression stricte des appels de notes collés directement au mot (sans espace)
+    # Ex: "temps.1", "sillonné2", "groupe8," SANS toucher à "25 %", "en 2005", "10 000"
+    texte_assaini = re.sub(r'(?<=[a-zA-ZÀ-ÿ\.\,\!\?\)])(\d{1,2})(?=[^\d%\w]|$)(?!\s*%)', '', texte_assaini)
 
-    # 3. Suppression des chiffres romains isolés en tête de document
+    # 3. Suppression du chiffre romain 'I' isolé en tête de document
     texte_assaini = re.sub(r'^\s*I\s*\n+', '', texte_assaini)
 
     return texte_assaini
 
 def nettoyer_texte_source(texte: str) -> str:
-    """Répare les césures de mots coupés et homogénéise les sauts de ligne."""
+    """
+    Répare les césures, aère les sous-titres en majuscules et homogénéise les sauts de ligne.
+    """
+    # Répare les mots coupés par un tiret en fin de ligne
     texte = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', texte)
     texte = re.sub(r'(?<!\n)\n(?!\n)', ' ', texte)
+
+    # Détecte les sous-titres en majuscules collés à la fin d'une phrase et les isole
+    # Ex: "...perçus. PARAÎTRE INTELLIGENT Il a été..." -> "...perçus.\n\nPARAÎTRE INTELLIGENT\n\nIl a été..."
+    texte = re.sub(
+        r'([.?!])\s+([A-ZÀ-ÖØ-ß\s\':-]{4,45})\s+([A-ZÀ-ÖØ-ß][a-zà-öø-ÿ])',
+        r'\1\n\n\2\n\n\3',
+        texte
+    )
 
     corrections = {
         "c h a p i t r e": "chapitre",
@@ -108,9 +128,9 @@ def nettoyer_texte_source(texte: str) -> str:
 
 def nettoyer_texte_pour_audio(texte: str) -> str:
     """
-    Formate le texte final pour la synthèse vocale :
+    Formate le texte traduit pour le moteur audio :
     - Corrige 'Job 38:4' en 'Job 38, 4' (supprime le bug de l'horloge).
-    - Supprime tous les résidus Markdown.
+    - Supprime tout le balisage Markdown.
     """
     if not texte:
         return ""
@@ -124,7 +144,7 @@ def nettoyer_texte_pour_audio(texte: str) -> str:
     texte = re.sub(r'(?<=\s)_(?=\S)|(?<=\S)_(?=\s)', '', texte)
     texte = texte.replace("_", "")
 
-    # 3. Ponctuation et tirets cadratins pour des pauses fluides
+    # 3. Ponctuation et tirets cadratins pour des pauses orales
     texte = re.sub(r'\s*[—–]\s*', ', ', texte)
     texte = re.sub(r'^\s*[—–]\s*', '', texte, flags=re.MULTILINE)
     texte = texte.replace("«", '"').replace("»", '"').replace("“", '"').replace("”", '"')
@@ -138,10 +158,7 @@ def nettoyer_texte_pour_audio(texte: str) -> str:
     return texte.strip()
 
 def decouper_texte_en_chunks(texte: str, taille_chunk: int = 15000) -> list:
-    """
-    Découpe le texte par paragraphes. DeepL accepte jusqu'à 128 Ko par requête,
-    des tranches de 15 000 caractères réduisent considérablement les allers-retours réseau.
-    """
+    """Découpe le texte par paragraphes en respectant la limite de DeepL."""
     if not texte:
         return []
     
@@ -178,10 +195,6 @@ def assainir_cle(cle_brute: str) -> str:
 # MOTEUR DE TRADUCTION DEEPL AVEC FAILOVER
 # ==============================================================================
 def traduire_chunk_deepl(chunk: str, api_key: str) -> str:
-    """
-    Appelle l'API DeepL. Détecte automatiquement s'il s'agit d'une clé Free (:fx)
-    ou d'une clé Pro.
-    """
     endpoint = "https://api-free.deepl.com/v2/translate" if api_key.endswith(":fx") else "https://api.deepl.com/v2/translate"
     
     headers = {
@@ -192,7 +205,7 @@ def traduire_chunk_deepl(chunk: str, api_key: str) -> str:
         "text": [chunk],
         "target_lang": "FR",
         "source_lang": "EN",
-        "split_sentences": "nonewlines",  # Préserve les paragraphes et les retours à la ligne
+        "split_sentences": "nonewlines",
         "preserve_formatting": "1"
     }
     
@@ -202,7 +215,6 @@ def traduire_chunk_deepl(chunk: str, api_key: str) -> str:
         resultat = response.json()
         return resultat["translations"][0]["text"].strip()
     else:
-        # Lève une exception détaillée pour la gestion d'erreurs
         raise Exception(f"HTTP {response.status_code} : {response.text}")
 
 # ==============================================================================
@@ -278,7 +290,7 @@ def main():
             st.text_area("Texte source nettoyé", value=texte_propre[:2000] + "...", height=150, disabled=True)
 
         # ======================================================================
-        # BRANCHE A : MODE ANGLAIS (TRADUCTION DEEPL AVEC ROTATION)
+        # BRANCHE A : MODE ANGLAIS
         # ======================================================================
         if mode_choisi == "🇬🇧 Document en Anglais":
             if st.session_state.texte_pret_pour_audio is None:
@@ -316,7 +328,6 @@ def main():
                             erreur_str = str(e).lower()
                             raw_error = str(e)
 
-                            # Détection des erreurs spécifiques à DeepL
                             if "456" in erreur_str or "quota exceeded" in erreur_str:
                                 diagnostic = "Plafond mensuel de 1 000 000 caractères épuisé sur ce compte (HTTP 456)"
                             elif "403" in erreur_str or "forbidden" in erreur_str:
@@ -326,7 +337,6 @@ def main():
                             else:
                                 diagnostic = f"Erreur de service ({str(e)[:120]})"
 
-                            # Bascule automatique vers la clé suivante
                             if index_cle + 1 < len(pool_cles):
                                 st.warning(
                                     f"⚠️ **Clé DeepL #{index_cle + 1} écartée** : {diagnostic}. "
