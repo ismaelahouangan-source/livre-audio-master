@@ -2,3 +2,4 @@ streamlit
 PyMuPDF
 edge-tts
 requests
+google-generativeai
