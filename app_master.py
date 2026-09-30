@@ -76,16 +76,27 @@ def filtrer_notes_et_artefacts(texte: str) -> str:
     lignes_filtrees = lignes[:index_coupure]
     texte_assaini = "\n".join(lignes_filtrees)
 
+    # Suppression stricte des appels de notes collés au texte
     texte_assaini = re.sub(r'(?<=[a-zA-ZÀ-ÿ\.\,\!\?\)])(\d{1,2})(?=[^\d%\w]|$)(?!\s*%)', '', texte_assaini)
     texte_assaini = re.sub(r'^\s*I\s*\n+', '', texte_assaini)
 
     return texte_assaini
 
 def nettoyer_texte_source(texte: str) -> str:
-    """Répare les césures PDF, aère les sous-titres et gère les sauts de ligne."""
+    """Répare les césures, recoud les phrases brisées par les sauts de page et aère les titres."""
+    # 1. Répare les césures de mots coupés (ex: con- fusion -> confusion)
     texte = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', texte)
+    
+    # 2. Répare les phrases coupées en deux par un saut de page PDF (ex: "Dès qu'\n\nil fut manifeste")
+    texte = re.sub(r'([a-zA-ZÀ-ÿ,\'’])\n\s*\n\s*([a-zà-öø-ÿ])', r'\1 \2', texte)
+
+    # 3. Fusionne les retours simples au sein d'une même phrase
     texte = re.sub(r'(?<!\n)\n(?!\n)', ' ', texte)
 
+    # 4. Isole systématiquement les en-têtes de chapitre (ex: "CHAPITRE 8 Fiona" -> "CHAPITRE 8\n\nFiona\n\n")
+    texte = re.sub(r'(CHAPITRE\s+\d+)\s+([^\n.]+)', r'\1\n\n\2\n\n', texte, flags=re.IGNORECASE)
+
+    # 5. Isole les sous-titres en majuscules collés à la fin d'une phrase
     texte = re.sub(
         r'([.?!])\s+([A-ZÀ-ÖØ-ß\s\':-]{4,45})\s+([A-ZÀ-ÖØ-ß][a-zà-öø-ÿ])',
         r'\1\n\n\2\n\n\3',
@@ -108,21 +119,25 @@ def nettoyer_texte_source(texte: str) -> str:
     return texte.strip()
 
 def nettoyer_texte_pour_audio(texte: str) -> str:
-    """Formate le texte traduit pour la fluidité de la synthèse vocale."""
+    """Formate le texte traduit pour la fluidité de la lecture audio."""
     if not texte:
         return ""
 
+    # Correction phonétique des références bibliques
     texte = re.sub(r'(\d+):(\d+)', r'\1, \2', texte)
 
+    # Suppression du Markdown
     texte = texte.replace("*", "")
     texte = re.sub(r'^#+\s*', '', texte, flags=re.MULTILINE)
     texte = re.sub(r'(?<=\s)_(?=\S)|(?<=\S)_(?=\s)', '', texte)
     texte = texte.replace("_", "")
 
+    # Ponctuation fluide
     texte = re.sub(r'\s*[—–]\s*', ', ', texte)
     texte = re.sub(r'^\s*[—–]\s*', '', texte, flags=re.MULTILINE)
     texte = texte.replace("«", '"').replace("»", '"').replace("“", '"').replace("”", '"')
 
+    # Aération stricte des paragraphes
     texte = re.sub(r'[ \t]+', ' ', texte)
     texte = re.sub(r' +(?=\n)', '', texte)
     texte = re.sub(r'\n\s*\n', '\n\n', texte)
@@ -130,8 +145,11 @@ def nettoyer_texte_pour_audio(texte: str) -> str:
 
     return texte.strip()
 
-def decouper_texte_en_chunks(texte: str, taille_chunk: int = 75000) -> list:
-    """Permet de traiter jusqu'à 75 000 caractères par bloc pour traduire un chapitre d'un seul tenant."""
+def decouper_texte_en_chunks(texte: str, taille_chunk: int = 28000) -> list:
+    """
+    Découpe en blocs d'environ 28 000 caractères (environ 2 à 3 blocs par chapitre).
+    Taille optimale permettant à l'IA d'aérer les paragraphes sans surcoût.
+    """
     if not texte:
         return []
     
@@ -159,31 +177,29 @@ def assainir_cle(cle_brute: str) -> str:
     return cle_brute.replace(r'\_', '_').replace('\\', '').strip().strip('"').strip("'")
 
 # ==============================================================================
-# MOTEUR DE TRADUCTION IA (OPTIMISÉ POUR RÉDUIRE LES TOKENS FACTURÉS)
+# MOTEUR DE TRADUCTION IA (STRUCTURE ET ÉCO-TOKENS)
 # ==============================================================================
 SYSTEM_INSTRUCTION = (
-    "Tu es un traducteur littéraire professionnel de très haut niveau. "
-    "Traduis le texte anglais fourni vers un français fluide, élégant et rigoureusement naturel.\n\n"
-    "DIRECTIVES DE GÉNÉRATION SANS SURCOÛT :\n"
-    "- Démarre IMMÉDIATEMENT la traduction. Ne produis AUCUN raisonnement, AUCUNE réflexion préalable, AUCUNE analyse.\n"
-    "- Conserve STRICTEMENT les sauts de paragraphes originaux avec des doubles sauts de ligne (\\n\\n).\n"
-    "- Ne coupe jamais une idée au milieu d'un paragraphe.\n"
-    "- N'utilise AUCUN balisage Markdown : AUCUN astérisque (* ou **), AUCUN dièse (#), AUCUN souligné (_).\n"
-    "- Ne rajoute AUCUNE formule d'introduction ou de conclusion."
+    "Tu es un traducteur littéraire et éditeur de premier ordre. "
+    "Traduis le texte anglais fourni vers un français fluide, naturel et élégant.\n\n"
+    "RÈGLES ABSOLUES D'AÉRATION ET DE MISE EN PAGE :\n"
+    "- Préserve impérativement une structure TRÈS AÉRÉE. Ne produis JAMAIS de blocs compacts ou de pavés denses.\n"
+    "- Le titre du chapitre et son sous-titre doivent obligatoirement être isolés sur leurs propres lignes avec un double saut de ligne (\\n\\n).\n"
+    "- Chaque changement de sujet, chaque dialogue et chaque citation doit constituer un paragraphe distinct séparé par un double saut de ligne (\\n\\n).\n"
+    "- Démarre IMMÉDIATEMENT la traduction. Ne produis aucun commentaire, aucune analyse, aucune étape de réflexion.\n"
+    "- N'utilise AUCUN balisage Markdown : AUCUN astérisque (* ou **), AUCUN dièse (#), AUCUN souligné (_)."
 )
 
 def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
     genai.configure(api_key=api_key)
     
-    # Injection des règles dans system_instruction pour mise en cache et suppression du verbiage
     model = genai.GenerativeModel(
         model_name='gemini-3.8-flash',
         system_instruction=SYSTEM_INSTRUCTION
     )
 
-    # Paramétrage strict : température basse pour traduction directe sans jetons parasites
     generation_config = genai.types.GenerationConfig(
-        temperature=0.1,
+        temperature=0.2,
         max_output_tokens=65536
     )
 
@@ -213,8 +229,8 @@ def generer_audio_hd(texte_francais: str, voix_choisie: str) -> bytes:
 # INTERFACE PRINCIPALE
 # ==============================================================================
 def main():
-    st.title("🎛️ Le Studio Audio Master")
-    st.markdown("Pipeline Optimisé : PyMuPDF ➡️ **Gemini 3.8 Flash (Éco-Budget)** ➡️ Edge-TTS HD.")
+    st.title("🎛️️ Le Studio Audio Master")
+    st.markdown("Pipeline Haute Fidélité : PyMuPDF ➡️ **Gemini 3.8 Flash (Structure & Éco-Tokens)** ➡️ Edge-TTS HD.")
     st.divider()
 
     cles_brutes = st.secrets.get("GOOGLE_API_KEYS", None)
@@ -277,7 +293,7 @@ def main():
                         st.error("🚨 Aucune clé API Google valide trouvée.")
                         return
 
-                    chunks_anglais = decouper_texte_en_chunks(texte_propre, taille_chunk=75000)
+                    chunks_anglais = decouper_texte_en_chunks(texte_propre, taille_chunk=28000)
                     chunks_traduits = []
                     barre_progression = st.progress(0, text="Initialisation de Gemini 3.8 Flash...")
 
@@ -288,7 +304,7 @@ def main():
                         pct = int(((i + 1) / len(chunks_anglais)) * 100)
                         barre_progression.progress(
                             pct,
-                            text=f"Traduction du grand bloc {i + 1}/{len(chunks_anglais)} (Clé #{index_cle + 1})..."
+                            text=f"Traduction partie {i + 1}/{len(chunks_anglais)} (Clé #{index_cle + 1})..."
                         )
 
                         cle_active = pool_cles[index_cle]
