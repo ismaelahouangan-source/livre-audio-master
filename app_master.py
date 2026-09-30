@@ -76,7 +76,7 @@ def filtrer_notes_et_artefacts(texte: str) -> str:
     lignes_filtrees = lignes[:index_coupure]
     texte_assaini = "\n".join(lignes_filtrees)
 
-    # Suppression stricte des appels de notes collés au texte
+    # Suppression des appels de notes collés au texte
     texte_assaini = re.sub(r'(?<=[a-zA-ZÀ-ÿ\.\,\!\?\)])(\d{1,2})(?=[^\d%\w]|$)(?!\s*%)', '', texte_assaini)
     texte_assaini = re.sub(r'^\s*I\s*\n+', '', texte_assaini)
 
@@ -87,13 +87,13 @@ def nettoyer_texte_source(texte: str) -> str:
     # 1. Répare les césures de mots coupés (ex: con- fusion -> confusion)
     texte = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', texte)
     
-    # 2. Répare les phrases coupées en deux par un saut de page PDF (ex: "Dès qu'\n\nil fut manifeste")
+    # 2. Répare les phrases coupées par un saut de page PDF
     texte = re.sub(r'([a-zA-ZÀ-ÿ,\'’])\n\s*\n\s*([a-zà-öø-ÿ])', r'\1 \2', texte)
 
     # 3. Fusionne les retours simples au sein d'une même phrase
     texte = re.sub(r'(?<!\n)\n(?!\n)', ' ', texte)
 
-    # 4. Isole systématiquement les en-têtes de chapitre (ex: "CHAPITRE 8 Fiona" -> "CHAPITRE 8\n\nFiona\n\n")
+    # 4. Isole les en-têtes de chapitre (ex: "CHAPITRE 8 Fiona" -> "CHAPITRE 8\n\nFiona\n\n")
     texte = re.sub(r'(CHAPITRE\s+\d+)\s+([^\n.]+)', r'\1\n\n\2\n\n', texte, flags=re.IGNORECASE)
 
     # 5. Isole les sous-titres en majuscules collés à la fin d'une phrase
@@ -119,25 +119,28 @@ def nettoyer_texte_source(texte: str) -> str:
     return texte.strip()
 
 def nettoyer_texte_pour_audio(texte: str) -> str:
-    """Formate le texte traduit pour la fluidité de la lecture audio."""
+    """Formate le texte traduit pour la fluidité et l'exactitude de la lecture audio."""
     if not texte:
         return ""
 
-    # Correction phonétique des références bibliques
+    # 1. Correction phonétique des références bibliques (Job 38:4 -> Job 38, 4)
     texte = re.sub(r'(\d+):(\d+)', r'\1, \2', texte)
 
-    # Suppression du Markdown
+    # 2. Répare les élisions orphelines (ex: "s installer" -> "s'installer", "d Amazon" -> "d'Amazon", "qu il" -> "qu'il")
+    texte = re.sub(r'\b([cdjlnmstCDJLNMS]|qu|QU|Qu)\s+([aeiouyhéèêàâîïôûùAEIOUYHÉÈÊÀÂÎÏÔÛÙ])', r"\1'\2", texte)
+
+    # 3. Suppression du Markdown
     texte = texte.replace("*", "")
     texte = re.sub(r'^#+\s*', '', texte, flags=re.MULTILINE)
     texte = re.sub(r'(?<=\s)_(?=\S)|(?<=\S)_(?=\s)', '', texte)
     texte = texte.replace("_", "")
 
-    # Ponctuation fluide
+    # 4. Ponctuation fluide et tirets
     texte = re.sub(r'\s*[—–]\s*', ', ', texte)
     texte = re.sub(r'^\s*[—–]\s*', '', texte, flags=re.MULTILINE)
     texte = texte.replace("«", '"').replace("»", '"').replace("“", '"').replace("”", '"')
 
-    # Aération stricte des paragraphes
+    # 5. Aération stricte des paragraphes
     texte = re.sub(r'[ \t]+', ' ', texte)
     texte = re.sub(r' +(?=\n)', '', texte)
     texte = re.sub(r'\n\s*\n', '\n\n', texte)
@@ -146,10 +149,7 @@ def nettoyer_texte_pour_audio(texte: str) -> str:
     return texte.strip()
 
 def decouper_texte_en_chunks(texte: str, taille_chunk: int = 28000) -> list:
-    """
-    Découpe en blocs d'environ 28 000 caractères (environ 2 à 3 blocs par chapitre).
-    Taille optimale permettant à l'IA d'aérer les paragraphes sans surcoût.
-    """
+    """Découpe en blocs d'environ 28 000 caractères pour concilier contexte et aération."""
     if not texte:
         return []
     
@@ -229,7 +229,7 @@ def generer_audio_hd(texte_francais: str, voix_choisie: str) -> bytes:
 # INTERFACE PRINCIPALE
 # ==============================================================================
 def main():
-    st.title("🎛️️ Le Studio Audio Master")
+    st.title("🎛️ Le Studio Audio Master")
     st.markdown("Pipeline Haute Fidélité : PyMuPDF ➡️ **Gemini 3.8 Flash (Structure & Éco-Tokens)** ➡️ Edge-TTS HD.")
     st.divider()
 
