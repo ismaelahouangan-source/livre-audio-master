@@ -10,6 +10,7 @@ import time
 import requests
 import base64
 import google.generativeai as genai
+from pydub import AudioSegment
 
 # ==============================================================================
 # CONFIGURATION DE LA PAGE & DES VOIX GEMINI TTS
@@ -20,7 +21,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Nouvelles voix exclusives Gemini 3.8 Flash TTS
 VOIX_GEMINI_TTS = {
     "Bodi (Homme - Calme, intimiste, voix grave)": "Bodi",
     "Lumi (Femme - Chaleureuse, voix grave)": "Lumi",
@@ -28,9 +28,6 @@ VOIX_GEMINI_TTS = {
     "Koda (Homme - Direct et utile, voix médium-grave)": "Koda"
 }
 
-# ==============================================================================
-# GESTION DE LA MÉMOIRE (SESSION STATE)
-# ==============================================================================
 def reinitialiser_memoire():
     st.session_state.texte_pret_pour_audio = None
 
@@ -57,11 +54,9 @@ def extraire_texte(fichier_telecharge) -> str:
 def filtrer_notes_et_artefacts(texte: str) -> str:
     if not texte:
         return ""
-
     lignes = texte.split("\n")
     lignes_filtrees = []
     index_coupure = len(lignes)
-
     pattern_section_notes = re.compile(r'^\s*(notes?\s+de\s+bas\s+de\s+page|footnotes?|notes?)\s*$', re.IGNORECASE)
 
     for idx, ligne in enumerate(lignes):
@@ -77,10 +72,8 @@ def filtrer_notes_et_artefacts(texte: str) -> str:
 
     lignes_filtrees = lignes[:index_coupure]
     texte_assaini = "\n".join(lignes_filtrees)
-
     texte_assaini = re.sub(r'(?<=[a-zA-ZÀ-ÿ\.\,\!\?\)])(\d{1,2})(?=[^\d%\w]|$)(?!\s*%)', '', texte_assaini)
     texte_assaini = re.sub(r'^\s*I\s*\n+', '', texte_assaini)
-
     return texte_assaini
 
 def nettoyer_texte_source(texte: str) -> str:
@@ -88,11 +81,7 @@ def nettoyer_texte_source(texte: str) -> str:
     texte = re.sub(r'([a-zA-ZÀ-ÿ,\'’])\n\s*\n\s*([a-zà-öø-ÿ])', r'\1 \2', texte)
     texte = re.sub(r'(?<!\n)\n(?!\n)', ' ', texte)
     texte = re.sub(r'(CHAPITRE\s+\d+)\s+([^\n.]+)', r'\1\n\n\2\n\n', texte, flags=re.IGNORECASE)
-    texte = re.sub(
-        r'([.?!])\s+([A-ZÀ-ÖØ-ß\s\':-]{4,45})\s+([A-ZÀ-ÖØ-ß][a-zà-öø-ÿ])',
-        r'\1\n\n\2\n\n\3',
-        texte
-    )
+    texte = re.sub(r'([.?!])\s+([A-ZÀ-ÖØ-ß\s\':-]{4,45})\s+([A-ZÀ-ÖØ-ß][a-zà-öø-ÿ])', r'\1\n\n\2\n\n\3', texte)
 
     corrections = {"c h a p i t r e": "chapitre", "ber ger": "berger", "V oyant": "Voyant", "br ebis": "brebis", "dif ficile": "difficile"}
     for erreur, correction in corrections.items():
@@ -106,48 +95,38 @@ def nettoyer_texte_source(texte: str) -> str:
 def nettoyer_texte_pour_audio(texte: str) -> str:
     if not texte:
         return ""
-
     texte = re.sub(r'(\d+):(\d+)', r'\1, \2', texte)
     texte = re.sub(r'\b([cdjlnmstCDJLNMS]|qu|QU|Qu)\s+([aeiouyhéèêàâîïôûùAEIOUYHÉÈÊÀÂÎÏÔÛÙ])', r"\1'\2", texte)
-    
     texte = texte.replace("*", "")
     texte = re.sub(r'^#+\s*', '', texte, flags=re.MULTILINE)
     texte = re.sub(r'(?<=\s)_(?=\S)|(?<=\S)_(?=\s)', '', texte)
     texte = texte.replace("_", "")
-
     texte = re.sub(r'\s*[—–]\s*', ', ', texte)
     texte = re.sub(r'^\s*[—–]\s*', '', texte, flags=re.MULTILINE)
     texte = texte.replace("«", '"').replace("»", '"').replace("“", '"').replace("”", '"')
-
     texte = re.sub(r'[ \t]+', ' ', texte)
     texte = re.sub(r' +(?=\n)', '', texte)
     texte = re.sub(r'\n\s*\n', '\n\n', texte)
     texte = re.sub(r'\n{3,}', '\n\n', texte)
-
     return texte.strip()
 
 def decouper_texte_en_chunks(texte: str, taille_chunk: int = 75000) -> list:
     if not texte:
         return []
-    
     paragraphes = texte.split("\n\n")
     chunks = []
     chunk_actuel = ""
-
     for paragraphe in paragraphes:
         paragraphe_propre = paragraphe.strip()
         if not paragraphe_propre:
             continue
-
         if len(chunk_actuel) + len(paragraphe_propre) + 2 > taille_chunk and len(chunk_actuel) > 0:
             chunks.append(chunk_actuel.strip())
             chunk_actuel = paragraphe_propre + "\n\n"
         else:
             chunk_actuel += paragraphe_propre + "\n\n"
-
     if chunk_actuel.strip():
         chunks.append(chunk_actuel.strip())
-
     return chunks
 
 def assainir_cle(cle_brute: str) -> str:
@@ -169,52 +148,56 @@ SYSTEM_INSTRUCTION = (
 
 def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
     genai.configure(api_key=api_key)
-    
-    model = genai.GenerativeModel(
-        model_name='gemini-3.8-flash',
-        system_instruction=SYSTEM_INSTRUCTION
-    )
-
-    generation_config = genai.types.GenerationConfig(
-        temperature=0.2,
-        max_output_tokens=65536
-    )
-
-    response = model.generate_content(chunk, generation_config=generation_config)
+    model = genai.GenerativeModel('gemini-3.8-flash', system_instruction=SYSTEM_INSTRUCTION)
+    try:
+        generation_config = genai.types.GenerationConfig(temperature=0.2, max_output_tokens=65536, thinking_config={"thinking_budget": 0})
+        response = model.generate_content(chunk, generation_config=generation_config)
+    except Exception:
+        generation_config = genai.types.GenerationConfig(temperature=0.2, max_output_tokens=65536)
+        response = model.generate_content(chunk, generation_config=generation_config)
     return response.text.strip()
 
 # ==============================================================================
-# NOUVEAU MOTEUR AUDIO : GEMINI 3.8 FLASH TTS
+# NOUVEAU MOTEUR AUDIO : GEMINI 3.8 FLASH TTS + FUSION PYDUB
 # ==============================================================================
 def generer_audio_gemini_tts(texte_francais: str, api_key: str, nom_voix: str) -> bytes:
     """
-    Génère l'audio en faisant appel à l'API REST Gemini 3.8 Flash TTS.
-    Gère le découpage automatique par paragraphes pour respecter les limites de l'API TTS.
+    Génère l'audio par blocs, fusionne proprement les formats bruts via Pydub,
+    respecte la limite de 10 requêtes par minute (RPM) et compresse le tout en un MP3 léger.
     """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-tts:generateContent?key={api_key}"
     headers = {'Content-Type': 'application/json'}
     
-    # Pour le TTS, on découpe le texte en blocs plus petits pour éviter les saturations
     paragraphes = texte_francais.split("\n\n")
-    audio_complet = b""
+    piste_master = AudioSegment.empty()
     bloc_texte = ""
 
+    # Limite sécuritaire d'environ 1500 caractères par appel TTS
     for i, para in enumerate(paragraphes):
         if len(bloc_texte) + len(para) > 1500:
-            audio_complet += _requete_api_tts(bloc_texte, nom_voix, url, headers)
+            donnees_brutes = _requete_api_tts(bloc_texte, nom_voix, url, headers)
+            # Chargement propre du flux audio en mémoire via Pydub
+            segment = AudioSegment.from_file(io.BytesIO(donnees_brutes))
+            piste_master += segment
+            
             bloc_texte = para + "\n\n"
-            time.sleep(1) # Pause de courtoisie pour l'API
+            # Pause de 6.5 secondes pour garantir un maximum de 9 requêtes par minute (limite stricte = 10)
+            time.sleep(6.5) 
         else:
             bloc_texte += para + "\n\n"
             
-    # Traiter le dernier bloc
+    # Traitement du dernier bloc
     if bloc_texte.strip():
-        audio_complet += _requete_api_tts(bloc_texte, nom_voix, url, headers)
+        donnees_brutes = _requete_api_tts(bloc_texte, nom_voix, url, headers)
+        segment = AudioSegment.from_file(io.BytesIO(donnees_brutes))
+        piste_master += segment
 
-    return audio_complet
+    # Export final avec compression MP3 (réduit drastiquement le poids du fichier final)
+    buffer_sortie = io.BytesIO()
+    piste_master.export(buffer_sortie, format="mp3", bitrate="128k")
+    return buffer_sortie.getvalue()
 
 def _requete_api_tts(texte: str, nom_voix: str, url: str, headers: dict) -> bytes:
-    # CORRECTION ICI : Remplacement de responseMimeType par responseModalities
     payload = {
         "contents": [{"parts": [{"text": texte}]}],
         "generationConfig": {
@@ -233,7 +216,6 @@ def _requete_api_tts(texte: str, nom_voix: str, url: str, headers: dict) -> byte
     if response.status_code == 200:
         resultat = response.json()
         try:
-            # Extraction de la chaîne audio encodée en base64
             audio_b64 = resultat['candidates'][0]['content']['parts'][0]['inlineData']['data']
             return base64.b64decode(audio_b64)
         except KeyError:
@@ -369,17 +351,16 @@ def main():
                     st.error("🚨 Clé API requise pour la génération vocale Gemini.")
                     return
                     
-                with st.spinner("🔊 Enregistrement studio par Gemini TTS en cours..."):
+                with st.spinner("🔊 Enregistrement studio par Gemini TTS en cours (laissez faire la magie)..."):
                     try:
                         texte_final_audio = nettoyer_texte_pour_audio(st.session_state.texte_pret_pour_audio)
-                        # Utilisation de la première clé disponible pour le TTS
                         cle_tts = pool_cles[0] 
                         donnees_audio_mp3 = generer_audio_gemini_tts(texte_final_audio, cle_tts, voix_technique)
 
                         st.success("🎉 Livre Audio Premium généré avec succès !")
                         st.audio(donnees_audio_mp3, format="audio/mp3")
                         st.download_button(
-                            label="⬇️ Télécharger le MP3 HD",
+                            label="⬇️️ Télécharger le MP3 Compressé",
                             data=donnees_audio_mp3,
                             file_name=f"Audio_Premium_{nom_base}.mp3",
                             mime="audio/mp3",
