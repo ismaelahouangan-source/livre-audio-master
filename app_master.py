@@ -67,7 +67,6 @@ def filtrer_notes_et_artefacts(texte: str) -> str:
         if pattern_section_notes.match(ligne_strip):
             index_coupure = idx
             break
-        # Détection d'un bloc de notes non titré en fin de document (> 60% du texte)
         if idx > len(lignes) * 0.6 and re.match(r'^[1I]\s*[\.\-\)]\s+[A-ZÀ-ÖØ-ß]', ligne_strip):
             texte_suivant = "\n".join(lignes[idx:idx+15])
             if re.search(r'\n[2]\s*[\.\-\)]', texte_suivant):
@@ -77,7 +76,6 @@ def filtrer_notes_et_artefacts(texte: str) -> str:
     lignes_filtrees = lignes[:index_coupure]
     texte_assaini = "\n".join(lignes_filtrees)
 
-    # Suppression stricte des appels de notes collés au texte (préserve " %")
     texte_assaini = re.sub(r'(?<=[a-zA-ZÀ-ÿ\.\,\!\?\)])(\d{1,2})(?=[^\d%\w]|$)(?!\s*%)', '', texte_assaini)
     texte_assaini = re.sub(r'^\s*I\s*\n+', '', texte_assaini)
 
@@ -88,7 +86,6 @@ def nettoyer_texte_source(texte: str) -> str:
     texte = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', texte)
     texte = re.sub(r'(?<!\n)\n(?!\n)', ' ', texte)
 
-    # Isole les sous-titres en majuscules pour éviter leur fusion avec les paragraphes
     texte = re.sub(
         r'([.?!])\s+([A-ZÀ-ÖØ-ß\s\':-]{4,45})\s+([A-ZÀ-ÖØ-ß][a-zà-öø-ÿ])',
         r'\1\n\n\2\n\n\3',
@@ -115,21 +112,17 @@ def nettoyer_texte_pour_audio(texte: str) -> str:
     if not texte:
         return ""
 
-    # Correction phonétique des références bibliques (ex: Job 38:4 -> Job 38, 4)
     texte = re.sub(r'(\d+):(\d+)', r'\1, \2', texte)
 
-    # Suppression des symboles Markdown
     texte = texte.replace("*", "")
     texte = re.sub(r'^#+\s*', '', texte, flags=re.MULTILINE)
     texte = re.sub(r'(?<=\s)_(?=\S)|(?<=\S)_(?=\s)', '', texte)
     texte = texte.replace("_", "")
 
-    # Ponctuation fluide et tirets d'incise
     texte = re.sub(r'\s*[—–]\s*', ', ', texte)
     texte = re.sub(r'^\s*[—–]\s*', '', texte, flags=re.MULTILINE)
     texte = texte.replace("«", '"').replace("»", '"').replace("“", '"').replace("”", '"')
 
-    # Structure des paragraphes
     texte = re.sub(r'[ \t]+', ' ', texte)
     texte = re.sub(r' +(?=\n)', '', texte)
     texte = re.sub(r'\n\s*\n', '\n\n', texte)
@@ -137,8 +130,8 @@ def nettoyer_texte_pour_audio(texte: str) -> str:
 
     return texte.strip()
 
-def decouper_texte_en_chunks(texte: str, taille_chunk: int = 40000) -> list:
-    """Découpe en larges blocs en respectant les frontières de paragraphes."""
+def decouper_texte_en_chunks(texte: str, taille_chunk: int = 75000) -> list:
+    """Permet de traiter jusqu'à 75 000 caractères par bloc pour traduire un chapitre d'un seul tenant."""
     if not texte:
         return []
     
@@ -166,45 +159,38 @@ def assainir_cle(cle_brute: str) -> str:
     return cle_brute.replace(r'\_', '_').replace('\\', '').strip().strip('"').strip("'")
 
 # ==============================================================================
-# MOTEUR DE TRADUCTION IA (GEMINI 3.8 FLASH OPTIMISÉ COÛT)
+# MOTEUR DE TRADUCTION IA (OPTIMISÉ POUR RÉDUIRE LES TOKENS FACTURÉS)
 # ==============================================================================
+SYSTEM_INSTRUCTION = (
+    "Tu es un traducteur littéraire professionnel de très haut niveau. "
+    "Traduis le texte anglais fourni vers un français fluide, élégant et rigoureusement naturel.\n\n"
+    "DIRECTIVES DE GÉNÉRATION SANS SURCOÛT :\n"
+    "- Démarre IMMÉDIATEMENT la traduction. Ne produis AUCUN raisonnement, AUCUNE réflexion préalable, AUCUNE analyse.\n"
+    "- Conserve STRICTEMENT les sauts de paragraphes originaux avec des doubles sauts de ligne (\\n\\n).\n"
+    "- Ne coupe jamais une idée au milieu d'un paragraphe.\n"
+    "- N'utilise AUCUN balisage Markdown : AUCUN astérisque (* ou **), AUCUN dièse (#), AUCUN souligné (_).\n"
+    "- Ne rajoute AUCUNE formule d'introduction ou de conclusion."
+)
+
 def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-3.8-flash')
-
-    prompt = (
-        "Tu es un traducteur littéraire professionnel et un éditeur méticuleux. "
-        "Traduis le texte suivant de l'anglais vers un français fluide, élégant et naturel.\n\n"
-        "CONSIGNES CRITIQUES DE FORMATAGE ET DE COHÉRENCE :\n"
-        "- Conserve la structure PARFAITE des paragraphes. Ne coupe jamais une phrase ou un paragraphe en plein milieu.\n"
-        "- Chaque paragraphe et chaque titre de section doit être séparé par un double saut de ligne (\\n\\n).\n"
-        "- N'utilise AUCUN balisage Markdown : AUCUN astérisque (* ou **), AUCUN dièse (#), AUCUN souligné (_).\n"
-        "- Ne rajoute aucune introduction, note explicative ou conclusion.\n\n"
-        f"Texte à traduire :\n{chunk}"
+    
+    # Injection des règles dans system_instruction pour mise en cache et suppression du verbiage
+    model = genai.GenerativeModel(
+        model_name='gemini-3.8-flash',
+        system_instruction=SYSTEM_INSTRUCTION
     )
 
-    # Configuration optimisée :
-    # 1. thinking_budget = 0 : Désactive les tokens de réflexion internes facturés en sortie à 3,75 $/M
-    # 2. temperature = 0.1 : Traduction directe, fidèle et concise, sans verbiage superflu
-    config_optimisee = {
-        "temperature": 0.1,
-        "thinking_config": {
-            "thinking_budget": 0
-        }
-    }
+    # Paramétrage strict : température basse pour traduction directe sans jetons parasites
+    generation_config = genai.types.GenerationConfig(
+        temperature=0.1,
+        max_output_tokens=65536
+    )
 
-    try:
-        response = model.generate_content(
-            prompt,
-            generation_config=config_optimisee
-        )
-    except Exception:
-        # Fallback automatique vers la configuration standard si la version du SDK ignore thinking_config
-        response = model.generate_content(
-            prompt,
-            generation_config={"temperature": 0.1}
-        )
-
+    response = model.generate_content(
+        chunk,
+        generation_config=generation_config
+    )
     return response.text.strip()
 
 # ==============================================================================
@@ -228,7 +214,7 @@ def generer_audio_hd(texte_francais: str, voix_choisie: str) -> bytes:
 # ==============================================================================
 def main():
     st.title("🎛️ Le Studio Audio Master")
-    st.markdown("Pipeline Niveau Pro : PyMuPDF ➡️ **Gemini 3.8 Flash (Éco-Tokens)** ➡️ Edge-TTS HD.")
+    st.markdown("Pipeline Optimisé : PyMuPDF ➡️ **Gemini 3.8 Flash (Éco-Budget)** ➡️ Edge-TTS HD.")
     st.divider()
 
     cles_brutes = st.secrets.get("GOOGLE_API_KEYS", None)
@@ -291,7 +277,7 @@ def main():
                         st.error("🚨 Aucune clé API Google valide trouvée.")
                         return
 
-                    chunks_anglais = decouper_texte_en_chunks(texte_propre, taille_chunk=40000)
+                    chunks_anglais = decouper_texte_en_chunks(texte_propre, taille_chunk=75000)
                     chunks_traduits = []
                     barre_progression = st.progress(0, text="Initialisation de Gemini 3.8 Flash...")
 
