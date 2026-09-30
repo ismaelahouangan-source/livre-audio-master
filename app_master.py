@@ -51,10 +51,50 @@ def extraire_texte(fichier_telecharge) -> str:
 
     return texte_extrait.strip()
 
+def filtrer_notes_et_artefacts(texte: str) -> str:
+    """Coupe le bloc de notes final et supprime les appels de notes sans toucher aux pourcentages."""
+    if not texte:
+        return ""
+
+    lignes = texte.split("\n")
+    lignes_filtrees = []
+    index_coupure = len(lignes)
+
+    pattern_section_notes = re.compile(r'^\s*(notes?\s+de\s+bas\s+de\s+page|footnotes?|notes?)\s*$', re.IGNORECASE)
+
+    for idx, ligne in enumerate(lignes):
+        ligne_strip = ligne.strip()
+        if pattern_section_notes.match(ligne_strip):
+            index_coupure = idx
+            break
+        # Détection d'un bloc de notes non titré en fin de document (> 60% du texte)
+        if idx > len(lignes) * 0.6 and re.match(r'^[1I]\s*[\.\-\)]\s+[A-ZÀ-ÖØ-ß]', ligne_strip):
+            texte_suivant = "\n".join(lignes[idx:idx+15])
+            if re.search(r'\n[2]\s*[\.\-\)]', texte_suivant):
+                index_coupure = idx
+                break
+
+    lignes_filtrees = lignes[:index_coupure]
+    texte_assaini = "\n".join(lignes_filtrees)
+
+    # Suppression stricte des appels de notes collés au texte (évite de supprimer les " %")
+    texte_assaini = re.sub(r'(?<=[a-zA-ZÀ-ÿ\.\,\!\?\)])(\d{1,2})(?=[^\d%\w]|$)(?!\s*%)', '', texte_assaini)
+    # Suppression du chiffre romain 'I' isolé en tête de document
+    texte_assaini = re.sub(r'^\s*I\s*\n+', '', texte_assaini)
+
+    return texte_assaini
+
 def nettoyer_texte_source(texte: str) -> str:
-    """Nettoie les césures PDF et répare les sauts de ligne internes aux phrases."""
+    """Répare les césures PDF, aère les sous-titres et gère les sauts de ligne."""
     texte = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', texte)
     texte = re.sub(r'(?<!\n)\n(?!\n)', ' ', texte)
+
+    # Isole les sous-titres en majuscules pour éviter qu'ils ne fusionnent avec les paragraphes
+    texte = re.sub(
+        r'([.?!])\s+([A-ZÀ-ÖØ-ß\s\':-]{4,45})\s+([A-ZÀ-ÖØ-ß][a-zà-öø-ÿ])',
+        r'\1\n\n\2\n\n\3',
+        texte
+    )
 
     corrections = {
         "c h a p i t r e": "chapitre",
@@ -72,31 +112,25 @@ def nettoyer_texte_source(texte: str) -> str:
     return texte.strip()
 
 def nettoyer_texte_pour_audio(texte: str) -> str:
-    """
-    Supprime les artefacts de synthèse vocale et traite les références
-    pour éviter la prononciation horaire (ex: Job 38:4 -> Job 38, 4).
-    """
+    """Formate le texte traduit pour la fluidité de la synthèse vocale."""
     if not texte:
         return ""
 
-    # 1. Correction des références bibliques et séparateurs de chiffres
+    # Correction du bug horaire (ex: Job 38:4 -> Job 38, 4)
     texte = re.sub(r'(\d+):(\d+)', r'\1, \2', texte)
 
-    # 2. Élimination des symboles et balises Markdown
+    # Suppression du Markdown
     texte = texte.replace("*", "")
     texte = re.sub(r'^#+\s*', '', texte, flags=re.MULTILINE)
     texte = re.sub(r'(?<=\s)_(?=\S)|(?<=\S)_(?=\s)', '', texte)
     texte = texte.replace("_", "")
 
-    # 3. Élimination du chiffre romain 'I' isolé en tête de document
-    texte = re.sub(r'^\s*I\s*\n+', '', texte)
-
-    # 4. Standardisation des tirets et guillemets pour des pauses orales naturelles
+    # Ponctuation fluide
     texte = re.sub(r'\s*[—–]\s*', ', ', texte)
     texte = re.sub(r'^\s*[—–]\s*', '', texte, flags=re.MULTILINE)
     texte = texte.replace("«", '"').replace("»", '"').replace("“", '"').replace("”", '"')
 
-    # 5. Préservation des alinéas et paragraphes
+    # Structure finale
     texte = re.sub(r'[ \t]+', ' ', texte)
     texte = re.sub(r' +(?=\n)', '', texte)
     texte = re.sub(r'\n\s*\n', '\n\n', texte)
@@ -104,8 +138,9 @@ def nettoyer_texte_pour_audio(texte: str) -> str:
 
     return texte.strip()
 
-def decouper_texte_en_chunks(texte: str, taille_chunk: int = 8000) -> list:
-    """Découpe le texte en respectant les limites des paragraphes."""
+# Capacité étendue à 40 000 caractères grâce à Gemini 3.8 Flash pour conserver le contexte entier
+def decouper_texte_en_chunks(texte: str, taille_chunk: int = 40000) -> list:
+    """Découpe en larges blocs en respectant les paragraphes."""
     if not texte:
         return []
     
@@ -130,30 +165,24 @@ def decouper_texte_en_chunks(texte: str, taille_chunk: int = 8000) -> list:
     return chunks
 
 def assainir_cle(cle_brute: str) -> str:
-    """Supprime les antislashes Markdown, espaces ou guillemets superflus."""
-    return (
-        cle_brute.replace(r'\_', '_')
-        .replace('\\', '')
-        .strip()
-        .strip('"')
-        .strip("'")
-    )
+    return cle_brute.replace(r'\_', '_').replace('\\', '').strip().strip('"').strip("'")
 
+# ==============================================================================
+# MOTEUR DE TRADUCTION IA (GEMINI 3.8 FLASH PRO)
+# ==============================================================================
 def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
     genai.configure(api_key=api_key)
-    # Moteur configuré sur Gemini 3.7 Flash
-    model = genai.GenerativeModel('gemini-3.7-flash')
+    # Activation du nouveau modèle de niveau entreprise
+    model = genai.GenerativeModel('gemini-3.8-flash')
 
     prompt = (
         "Tu es un traducteur littéraire professionnel et un éditeur méticuleux. "
         "Traduis le texte suivant de l'anglais vers un français fluide, élégant et naturel.\n\n"
-        "CONSIGNES CRITIQUES DE NETTOYAGE ET DE FORMATAGE :\n"
-        "- SUPPRIME INTÉGRALEMENT toutes les notes de bas de page (les blocs de citations, références ou notes situés en bas de page ou en fin de section qui débutent par des numéros). Ne les traduis pas.\n"
-        "- IGNORE ET SUPPRIME tous les appels de notes (les petits numéros de renvoi isolés dans le texte).\n"
-        "- Conserve STRICTEMENT la disposition aérée et les sauts de paragraphes d'origine.\n"
+        "CONSIGNES CRITIQUES DE FORMATAGE ET DE COHÉRENCE :\n"
+        "- Conserve la structure PARFAITE des paragraphes. Ne coupe jamais une phrase ou un paragraphe en plein milieu.\n"
         "- Chaque paragraphe et chaque titre de section doit être séparé par un double saut de ligne (\\n\\n).\n"
         "- N'utilise AUCUN balisage Markdown : AUCUN astérisque (* ou **), AUCUN dièse (#), AUCUN souligné (_).\n"
-        "- Ne rajoute aucune introduction, note explicative ou commentaire personnel.\n\n"
+        "- Ne rajoute aucune introduction, note explicative ou conclusion.\n\n"
         f"Texte à traduire :\n{chunk}"
     )
 
@@ -163,6 +192,9 @@ def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
     )
     return response.text.strip()
 
+# ==============================================================================
+# MOTEUR AUDIO EDGE-TTS
+# ==============================================================================
 async def generer_audio_edge_async(texte: str, voix: str, chemin_sortie: str):
     communicate = edge_tts.Communicate(texte, voix)
     await communicate.save(chemin_sortie)
@@ -181,7 +213,7 @@ def generer_audio_hd(texte_francais: str, voix_choisie: str) -> bytes:
 # ==============================================================================
 def main():
     st.title("🎛️ Le Studio Audio Master")
-    st.markdown("Pipeline haute performance : PyMuPDF ➡️ Gemini 3.7 Flash ➡️ Edge-TTS HD.")
+    st.markdown("Pipeline Niveau Pro : PyMuPDF ➡️ **Gemini 3.8 Flash** ➡️ Edge-TTS HD.")
     st.divider()
 
     cles_brutes = st.secrets.get("GOOGLE_API_KEYS", None)
@@ -203,7 +235,7 @@ def main():
 
         st.header("2. Configuration")
         if mode_choisi == "🇬🇧 Document en Anglais":
-            st.caption(f"🔑 **{len(pool_cles)} clé(s) active(s)** dans le pool.")
+            st.caption(f"🔑 **{len(pool_cles)} clé(s) active(s)** dans le pool Pro.")
             cle_manuelle = st.text_input("Remplacer temporairement par une clé :", type="password")
             if cle_manuelle.strip():
                 pool_cles = [assainir_cle(cle_manuelle)]
@@ -220,7 +252,8 @@ def main():
 
     if fichier_upload is not None:
         texte_brut = extraire_texte(fichier_upload)
-        texte_propre = nettoyer_texte_source(texte_brut)
+        texte_sans_notes = filtrer_notes_et_artefacts(texte_brut)
+        texte_propre = nettoyer_texte_source(texte_sans_notes)
 
         if not texte_propre:
             st.error("❌ Le document semble vide ou illisible.")
@@ -238,14 +271,15 @@ def main():
             if st.session_state.texte_pret_pour_audio is None:
                 st.subheader("Étape 2 : Traduction en Français")
 
-                if st.button("🚀 Lancer la Traduction IA", type="primary"):
+                if st.button("🚀 Lancer la Traduction Pro IA", type="primary"):
                     if not pool_cles:
                         st.error("🚨 Aucune clé API Google valide trouvée.")
                         return
 
-                    chunks_anglais = decouper_texte_en_chunks(texte_propre, taille_chunk=8000)
+                    # Chunks de 40 000 caractères pour maximiser le contexte
+                    chunks_anglais = decouper_texte_en_chunks(texte_propre, taille_chunk=40000)
                     chunks_traduits = []
-                    barre_progression = st.progress(0, text="Initialisation de Gemini 3.7 Flash...")
+                    barre_progression = st.progress(0, text="Initialisation de Gemini 3.8 Flash...")
 
                     index_cle = 0
                     i = 0
@@ -254,7 +288,7 @@ def main():
                         pct = int(((i + 1) / len(chunks_anglais)) * 100)
                         barre_progression.progress(
                             pct,
-                            text=f"Traduction partie {i + 1}/{len(chunks_anglais)} (Clé #{index_cle + 1}/{len(pool_cles)})..."
+                            text=f"Traduction du grand bloc {i + 1}/{len(chunks_anglais)} (Clé #{index_cle + 1})..."
                         )
 
                         cle_active = pool_cles[index_cle]
@@ -271,20 +305,19 @@ def main():
                             raw_error = str(e)
 
                             if "429" in erreur_str or "quota" in erreur_str or "resource_exhausted" in erreur_str:
-                                diagnostic = "Quota par minute ou plafond journalier atteint (429)"
-                            elif "401" in erreur_str or "invalid authentication" in erreur_str or "access_token_type_unsupported" in erreur_str:
-                                diagnostic = "Clé invalide, révoquée ou format corrompu (401)"
+                                diagnostic = "Quota par minute ou plafond de facturation atteint (429)"
+                            elif "401" in erreur_str or "invalid authentication" in erreur_str:
+                                diagnostic = "Clé invalide ou révoquée (401)"
                             elif "403" in erreur_str or "permission_denied" in erreur_str:
-                                diagnostic = "Permission refusée ou restrictions de l'API (403)"
+                                diagnostic = "Projet sans facturation active ou accès refusé (403)"
                             else:
                                 diagnostic = f"Erreur de service ({str(e)[:120]})"
 
-                            # Basculement avec affichage du retour d'erreur brut
                             if index_cle + 1 < len(pool_cles):
                                 st.warning(
                                     f"⚠️ **Clé #{index_cle + 1} écartée** : {diagnostic}. "
                                     f"Bascule immédiate sur la **Clé #{index_cle + 2}**...\n\n"
-                                    f"**Message d'erreur brut de Google :**\n```text\n{raw_error}\n```"
+                                    f"**Erreur API Google :**\n```text\n{raw_error}\n```"
                                 )
                                 index_cle += 1
                                 time.sleep(1.5)
@@ -293,7 +326,7 @@ def main():
                                     st.session_state.texte_pret_pour_audio = "\n\n".join(chunks_traduits)
                                 st.error(
                                     f"🚨 **Échec définitif sur la Clé #{index_cle + 1}** : {diagnostic}.\n\n"
-                                    f"**Message d'erreur brut de Google :**\n```text\n{raw_error}\n```\n\n"
+                                    f"**Erreur API Google :**\n```text\n{raw_error}\n```\n\n"
                                     "Toutes les clés du pool ont été consommées."
                                 )
                                 st.rerun()
@@ -327,7 +360,7 @@ def main():
             )
 
             st.write("---")
-            if st.button("🎙️ Générer le Livre Audio HD", type="primary"):
+            if st.button("🎙️️ Générer le Livre Audio HD", type="primary"):
                 with st.spinner("🔊 Synthèse vocale fluide en cours..."):
                     try:
                         texte_final_audio = nettoyer_texte_pour_audio(st.session_state.texte_pret_pour_audio)
