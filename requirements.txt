@@ -3,3 +3,4 @@ PyMuPDF
 edge-tts
 requests
 google-generativeai>=0.8.0
+pydub
