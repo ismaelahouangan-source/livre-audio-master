@@ -77,9 +77,8 @@ def filtrer_notes_et_artefacts(texte: str) -> str:
     lignes_filtrees = lignes[:index_coupure]
     texte_assaini = "\n".join(lignes_filtrees)
 
-    # Suppression stricte des appels de notes collés au texte (évite de supprimer les " %")
+    # Suppression stricte des appels de notes collés au texte (préserve " %")
     texte_assaini = re.sub(r'(?<=[a-zA-ZÀ-ÿ\.\,\!\?\)])(\d{1,2})(?=[^\d%\w]|$)(?!\s*%)', '', texte_assaini)
-    # Suppression du chiffre romain 'I' isolé en tête de document
     texte_assaini = re.sub(r'^\s*I\s*\n+', '', texte_assaini)
 
     return texte_assaini
@@ -89,7 +88,7 @@ def nettoyer_texte_source(texte: str) -> str:
     texte = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', texte)
     texte = re.sub(r'(?<!\n)\n(?!\n)', ' ', texte)
 
-    # Isole les sous-titres en majuscules pour éviter qu'ils ne fusionnent avec les paragraphes
+    # Isole les sous-titres en majuscules pour éviter leur fusion avec les paragraphes
     texte = re.sub(
         r'([.?!])\s+([A-ZÀ-ÖØ-ß\s\':-]{4,45})\s+([A-ZÀ-ÖØ-ß][a-zà-öø-ÿ])',
         r'\1\n\n\2\n\n\3',
@@ -116,21 +115,21 @@ def nettoyer_texte_pour_audio(texte: str) -> str:
     if not texte:
         return ""
 
-    # Correction du bug horaire (ex: Job 38:4 -> Job 38, 4)
+    # Correction phonétique des références bibliques (ex: Job 38:4 -> Job 38, 4)
     texte = re.sub(r'(\d+):(\d+)', r'\1, \2', texte)
 
-    # Suppression du Markdown
+    # Suppression des symboles Markdown
     texte = texte.replace("*", "")
     texte = re.sub(r'^#+\s*', '', texte, flags=re.MULTILINE)
     texte = re.sub(r'(?<=\s)_(?=\S)|(?<=\S)_(?=\s)', '', texte)
     texte = texte.replace("_", "")
 
-    # Ponctuation fluide
+    # Ponctuation fluide et tirets d'incise
     texte = re.sub(r'\s*[—–]\s*', ', ', texte)
     texte = re.sub(r'^\s*[—–]\s*', '', texte, flags=re.MULTILINE)
     texte = texte.replace("«", '"').replace("»", '"').replace("“", '"').replace("”", '"')
 
-    # Structure finale
+    # Structure des paragraphes
     texte = re.sub(r'[ \t]+', ' ', texte)
     texte = re.sub(r' +(?=\n)', '', texte)
     texte = re.sub(r'\n\s*\n', '\n\n', texte)
@@ -138,9 +137,8 @@ def nettoyer_texte_pour_audio(texte: str) -> str:
 
     return texte.strip()
 
-# Capacité étendue à 40 000 caractères grâce à Gemini 3.8 Flash pour conserver le contexte entier
 def decouper_texte_en_chunks(texte: str, taille_chunk: int = 40000) -> list:
-    """Découpe en larges blocs en respectant les paragraphes."""
+    """Découpe en larges blocs en respectant les frontières de paragraphes."""
     if not texte:
         return []
     
@@ -168,11 +166,10 @@ def assainir_cle(cle_brute: str) -> str:
     return cle_brute.replace(r'\_', '_').replace('\\', '').strip().strip('"').strip("'")
 
 # ==============================================================================
-# MOTEUR DE TRADUCTION IA (GEMINI 3.8 FLASH PRO)
+# MOTEUR DE TRADUCTION IA (GEMINI 3.8 FLASH OPTIMISÉ COÛT)
 # ==============================================================================
 def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
     genai.configure(api_key=api_key)
-    # Activation du nouveau modèle de niveau entreprise
     model = genai.GenerativeModel('gemini-3.8-flash')
 
     prompt = (
@@ -186,10 +183,28 @@ def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
         f"Texte à traduire :\n{chunk}"
     )
 
-    response = model.generate_content(
-        prompt,
-        generation_config={"temperature": 0.2}
-    )
+    # Configuration optimisée :
+    # 1. thinking_budget = 0 : Désactive les tokens de réflexion internes facturés en sortie à 3,75 $/M
+    # 2. temperature = 0.1 : Traduction directe, fidèle et concise, sans verbiage superflu
+    config_optimisee = {
+        "temperature": 0.1,
+        "thinking_config": {
+            "thinking_budget": 0
+        }
+    }
+
+    try:
+        response = model.generate_content(
+            prompt,
+            generation_config=config_optimisee
+        )
+    except Exception:
+        # Fallback automatique vers la configuration standard si la version du SDK ignore thinking_config
+        response = model.generate_content(
+            prompt,
+            generation_config={"temperature": 0.1}
+        )
+
     return response.text.strip()
 
 # ==============================================================================
@@ -213,7 +228,7 @@ def generer_audio_hd(texte_francais: str, voix_choisie: str) -> bytes:
 # ==============================================================================
 def main():
     st.title("🎛️ Le Studio Audio Master")
-    st.markdown("Pipeline Niveau Pro : PyMuPDF ➡️ **Gemini 3.8 Flash** ➡️ Edge-TTS HD.")
+    st.markdown("Pipeline Niveau Pro : PyMuPDF ➡️ **Gemini 3.8 Flash (Éco-Tokens)** ➡️ Edge-TTS HD.")
     st.divider()
 
     cles_brutes = st.secrets.get("GOOGLE_API_KEYS", None)
@@ -276,7 +291,6 @@ def main():
                         st.error("🚨 Aucune clé API Google valide trouvée.")
                         return
 
-                    # Chunks de 40 000 caractères pour maximiser le contexte
                     chunks_anglais = decouper_texte_en_chunks(texte_propre, taille_chunk=40000)
                     chunks_traduits = []
                     barre_progression = st.progress(0, text="Initialisation de Gemini 3.8 Flash...")
@@ -305,7 +319,7 @@ def main():
                             raw_error = str(e)
 
                             if "429" in erreur_str or "quota" in erreur_str or "resource_exhausted" in erreur_str:
-                                diagnostic = "Quota par minute ou plafond de facturation atteint (429)"
+                                diagnostic = "Plafond temporaire ou limite atteinte (429)"
                             elif "401" in erreur_str or "invalid authentication" in erreur_str:
                                 diagnostic = "Clé invalide ou révoquée (401)"
                             elif "403" in erreur_str or "permission_denied" in erreur_str:
@@ -360,7 +374,7 @@ def main():
             )
 
             st.write("---")
-            if st.button("🎙️️ Générer le Livre Audio HD", type="primary"):
+            if st.button("🎙️ Générer le Livre Audio HD", type="primary"):
                 with st.spinner("🔊 Synthèse vocale fluide en cours..."):
                     try:
                         texte_final_audio = nettoyer_texte_pour_audio(st.session_state.texte_pret_pour_audio)
