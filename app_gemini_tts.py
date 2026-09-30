@@ -1,7 +1,10 @@
 import streamlit as st
 import fitz  # PyMuPDF
 import io
+import asyncio
+import tempfile
 import os
+import edge_tts
 import re
 import time
 import requests
@@ -101,7 +104,6 @@ def nettoyer_texte_source(texte: str) -> str:
     return texte.strip()
 
 def nettoyer_texte_pour_audio(texte: str) -> str:
-    """Formatage pour la voix IA Premium (Gemini TTS accepte les balises émotionnelles, on supprime juste le Markdown)"""
     if not texte:
         return ""
 
@@ -192,16 +194,16 @@ def generer_audio_gemini_tts(texte_francais: str, api_key: str, nom_voix: str) -
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-tts:generateContent?key={api_key}"
     headers = {'Content-Type': 'application/json'}
     
-    # Pour le TTS, on découpe le texte en blocs plus petits (ex: 2000 caractères) pour éviter les saturations
+    # Pour le TTS, on découpe le texte en blocs plus petits pour éviter les saturations
     paragraphes = texte_francais.split("\n\n")
     audio_complet = b""
     bloc_texte = ""
 
     for i, para in enumerate(paragraphes):
-        if len(bloc_texte) + len(para) > 2000:
+        if len(bloc_texte) + len(para) > 1500:
             audio_complet += _requete_api_tts(bloc_texte, nom_voix, url, headers)
             bloc_texte = para + "\n\n"
-            time.sleep(0.5) # Pause pour éviter le Rate Limit
+            time.sleep(1) # Pause de courtoisie pour l'API
         else:
             bloc_texte += para + "\n\n"
             
@@ -212,11 +214,11 @@ def generer_audio_gemini_tts(texte_francais: str, api_key: str, nom_voix: str) -
     return audio_complet
 
 def _requete_api_tts(texte: str, nom_voix: str, url: str, headers: dict) -> bytes:
-    # Structure de payload standard pour Gemini TTS
+    # CORRECTION ICI : Remplacement de responseMimeType par responseModalities
     payload = {
         "contents": [{"parts": [{"text": texte}]}],
         "generationConfig": {
-            "responseMimeType": "audio/mp3",
+            "responseModalities": ["AUDIO"],
             "speechConfig": {
                 "voiceConfig": {
                     "prebuiltVoiceConfig": {
