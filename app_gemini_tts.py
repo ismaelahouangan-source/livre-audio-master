@@ -9,8 +9,8 @@ import re
 import time
 import requests
 import base64
+import struct
 import google.generativeai as genai
-from pydub import AudioSegment
 
 # ==============================================================================
 # CONFIGURATION DE LA PAGE & DES VOIX GEMINI TTS
@@ -133,7 +133,7 @@ def assainir_cle(cle_brute: str) -> str:
     return cle_brute.replace(r'\_', '_').replace('\\', '').strip().strip('"').strip("'")
 
 # ==============================================================================
-# MOTEUR DE TRADUCTION IA (Gemini 3.8 Flash)
+# TRADUCTION IA (Gemini 3.8 Flash)
 # ==============================================================================
 SYSTEM_INSTRUCTION = (
     "Tu es un traducteur littéraire et éditeur de premier ordre. "
@@ -158,44 +158,79 @@ def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
     return response.text.strip()
 
 # ==============================================================================
-# NOUVEAU MOTEUR AUDIO : GEMINI 3.8 FLASH TTS + FUSION PYDUB
+# MOTEUR GEMINI TTS : FUSION WAV EN PYTHON PUR
 # ==============================================================================
+def fusionner_flux_wav(morceaux_wav: list[bytes]) -> bytes:
+    """
+    Assemble plusieurs fichiers WAV en un seul fichier audio continu
+    en reconstruisant proprement l'en-tête RIFF/WAVE sans dépendance externe.
+    """
+    if not morceaux_wav:
+        return b""
+    if len(morceaux_wav) == 1:
+        return morceaux_wav[0]
+
+    donnees_pcm = []
+    en_tete_reference = None
+
+    for bloc in morceaux_wav:
+        pos_data = bloc.find(b'data')
+        if pos_data != -1:
+            if en_tete_reference is None:
+                en_tete_reference = bloc[:pos_data + 8]
+            taille_chunk_data = int.from_bytes(bloc[pos_data + 4:pos_data + 8], byteorder='little')
+            pcm = bloc[pos_data + 8:pos_data + 8 + taille_chunk_data] if taille_chunk_data > 0 else bloc[pos_data + 8:]
+            donnees_pcm.append(pcm)
+        else:
+            if en_tete_reference is None:
+                en_tete_reference = bloc[:44]
+            donnees_pcm.append(bloc[44:])
+
+    pcm_total = b"".join(donnees_pcm)
+    taille_pcm = len(pcm_total)
+    taille_fichier_moins_8 = len(en_tete_reference) - 8 + taille_pcm
+
+    pos_data = en_tete_reference.find(b'data')
+    en_tete_final = bytearray(en_tete_reference)
+    en_tete_final[4:8] = struct.pack('<I', taille_fichier_moins_8)
+    en_tete_final[pos_data + 4:pos_data + 8] = struct.pack('<I', taille_pcm)
+
+    return bytes(en_tete_final) + pcm_total
+
 def generer_audio_gemini_tts(texte_francais: str, api_key: str, nom_voix: str) -> bytes:
-    """
-    Génère l'audio par blocs, fusionne proprement les formats bruts via Pydub,
-    respecte la limite de 10 requêtes par minute (RPM) et compresse le tout en un MP3 léger.
-    """
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-tts:generateContent?key={api_key}"
     headers = {'Content-Type': 'application/json'}
-    
+
     paragraphes = texte_francais.split("\n\n")
-    piste_master = AudioSegment.empty()
-    bloc_texte = ""
+    blocs_texte = []
+    tampon = ""
 
-    # Limite sécuritaire d'environ 1500 caractères par appel TTS
-    for i, para in enumerate(paragraphes):
-        if len(bloc_texte) + len(para) > 1500:
-            donnees_brutes = _requete_api_tts(bloc_texte, nom_voix, url, headers)
-            # Chargement propre du flux audio en mémoire via Pydub
-            segment = AudioSegment.from_file(io.BytesIO(donnees_brutes))
-            piste_master += segment
-            
-            bloc_texte = para + "\n\n"
-            # Pause de 6.5 secondes pour garantir un maximum de 9 requêtes par minute (limite stricte = 10)
-            time.sleep(6.5) 
+    # Découpage par blocs de ~3000 caractères pour limiter le nombre de requêtes
+    for para in paragraphes:
+        if len(tampon) + len(para) > 3000 and tampon.strip():
+            blocs_texte.append(tampon.strip())
+            tampon = para + "\n\n"
         else:
-            bloc_texte += para + "\n\n"
-            
-    # Traitement du dernier bloc
-    if bloc_texte.strip():
-        donnees_brutes = _requete_api_tts(bloc_texte, nom_voix, url, headers)
-        segment = AudioSegment.from_file(io.BytesIO(donnees_brutes))
-        piste_master += segment
+            tampon += para + "\n\n"
+    if tampon.strip():
+        blocs_texte.append(tampon.strip())
 
-    # Export final avec compression MP3 (réduit drastiquement le poids du fichier final)
-    buffer_sortie = io.BytesIO()
-    piste_master.export(buffer_sortie, format="mp3", bitrate="128k")
-    return buffer_sortie.getvalue()
+    liste_audio_wav = []
+    barre_tts = st.progress(0, text="Génération vocale haute fidélité avec Bodi...")
+
+    for idx, bloc in enumerate(blocs_texte):
+        pct = int(((idx + 1) / len(blocs_texte)) * 100)
+        barre_tts.progress(pct, text=f"Enregistrement de la séquence {idx + 1}/{len(blocs_texte)}...")
+        
+        audio_bloc = _requete_api_tts(bloc, nom_voix, url, headers)
+        liste_audio_wav.append(audio_bloc)
+        
+        # Pause de 7 secondes pour respecter le quota strict de 10 RPM (environ 8 requêtes/minute max)
+        if idx + 1 < len(blocs_texte):
+            time.sleep(7.0)
+
+    barre_tts.empty()
+    return fusionner_flux_wav(liste_audio_wav)
 
 def _requete_api_tts(texte: str, nom_voix: str, url: str, headers: dict) -> bytes:
     payload = {
@@ -211,7 +246,7 @@ def _requete_api_tts(texte: str, nom_voix: str, url: str, headers: dict) -> byte
             }
         }
     }
-    
+
     response = requests.post(url, headers=headers, json=payload)
     if response.status_code == 200:
         resultat = response.json()
@@ -227,7 +262,7 @@ def _requete_api_tts(texte: str, nom_voix: str, url: str, headers: dict) -> byte
 # INTERFACE PRINCIPALE
 # ==============================================================================
 def main():
-    st.title("🎙️ Le Studio Master - Gemini TTS Premium")
+    st.title("🎙️️ Le Studio Master - Gemini TTS Premium")
     st.markdown("Pipeline Ultra-Réaliste : PyMuPDF ➡️ **Gemini 3.8 Flash** ➡️ **Gemini 3.8 Flash TTS**.")
     st.divider()
 
@@ -350,20 +385,20 @@ def main():
                 if not pool_cles:
                     st.error("🚨 Clé API requise pour la génération vocale Gemini.")
                     return
-                    
-                with st.spinner("🔊 Enregistrement studio par Gemini TTS en cours (laissez faire la magie)..."):
+
+                with st.spinner("🔊 Enregistrement studio par Gemini TTS en cours..."):
                     try:
                         texte_final_audio = nettoyer_texte_pour_audio(st.session_state.texte_pret_pour_audio)
-                        cle_tts = pool_cles[0] 
-                        donnees_audio_mp3 = generer_audio_gemini_tts(texte_final_audio, cle_tts, voix_technique)
+                        cle_tts = pool_cles[0]
+                        donnees_audio_wav = generer_audio_gemini_tts(texte_final_audio, cle_tts, voix_technique)
 
-                        st.success("🎉 Livre Audio Premium généré avec succès !")
-                        st.audio(donnees_audio_mp3, format="audio/mp3")
+                        st.success("🎉 Livre Audio Premium complet généré avec succès !")
+                        st.audio(donnees_audio_wav, format="audio/wav")
                         st.download_button(
-                            label="⬇️️ Télécharger le MP3 Compressé",
-                            data=donnees_audio_mp3,
-                            file_name=f"Audio_Premium_{nom_base}.mp3",
-                            mime="audio/mp3",
+                            label="⬇️ Télécharger l'Audio HD (.wav)",
+                            data=donnees_audio_wav,
+                            file_name=f"Audio_Premium_{nom_base}.wav",
+                            mime="audio/wav",
                             type="primary"
                         )
                     except Exception as e:
