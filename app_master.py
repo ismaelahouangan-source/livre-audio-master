@@ -76,7 +76,7 @@ def filtrer_notes_et_artefacts(texte: str) -> str:
     lignes_filtrees = lignes[:index_coupure]
     texte_assaini = "\n".join(lignes_filtrees)
 
-    # Suppression des appels de notes collés au texte
+    # Suppression stricte des appels de notes collés au texte
     texte_assaini = re.sub(r'(?<=[a-zA-ZÀ-ÿ\.\,\!\?\)])(\d{1,2})(?=[^\d%\w]|$)(?!\s*%)', '', texte_assaini)
     texte_assaini = re.sub(r'^\s*I\s*\n+', '', texte_assaini)
 
@@ -84,19 +84,11 @@ def filtrer_notes_et_artefacts(texte: str) -> str:
 
 def nettoyer_texte_source(texte: str) -> str:
     """Répare les césures, recoud les phrases brisées par les sauts de page et aère les titres."""
-    # 1. Répare les césures de mots coupés (ex: con- fusion -> confusion)
     texte = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', texte)
-    
-    # 2. Répare les phrases coupées par un saut de page PDF
     texte = re.sub(r'([a-zA-ZÀ-ÿ,\'’])\n\s*\n\s*([a-zà-öø-ÿ])', r'\1 \2', texte)
-
-    # 3. Fusionne les retours simples au sein d'une même phrase
     texte = re.sub(r'(?<!\n)\n(?!\n)', ' ', texte)
 
-    # 4. Isole les en-têtes de chapitre (ex: "CHAPITRE 8 Fiona" -> "CHAPITRE 8\n\nFiona\n\n")
     texte = re.sub(r'(CHAPITRE\s+\d+)\s+([^\n.]+)', r'\1\n\n\2\n\n', texte, flags=re.IGNORECASE)
-
-    # 5. Isole les sous-titres en majuscules collés à la fin d'une phrase
     texte = re.sub(
         r'([.?!])\s+([A-ZÀ-ÖØ-ß\s\':-]{4,45})\s+([A-ZÀ-ÖØ-ß][a-zà-öø-ÿ])',
         r'\1\n\n\2\n\n\3',
@@ -119,28 +111,28 @@ def nettoyer_texte_source(texte: str) -> str:
     return texte.strip()
 
 def nettoyer_texte_pour_audio(texte: str) -> str:
-    """Formate le texte traduit pour la fluidité et l'exactitude de la lecture audio."""
+    """Formate le texte traduit pour la fluidité et l'exactitude de la lecture audio par Edge-TTS."""
     if not texte:
         return ""
 
-    # 1. Correction phonétique des références bibliques (Job 38:4 -> Job 38, 4)
+    # Correction phonétique des références bibliques (Job 38:4 -> Job 38, 4)
     texte = re.sub(r'(\d+):(\d+)', r'\1, \2', texte)
 
-    # 2. Répare les élisions orphelines (ex: "s installer" -> "s'installer", "d Amazon" -> "d'Amazon", "qu il" -> "qu'il")
+    # Répare les élisions orphelines (ex: "s installer" -> "s'installer")
     texte = re.sub(r'\b([cdjlnmstCDJLNMS]|qu|QU|Qu)\s+([aeiouyhéèêàâîïôûùAEIOUYHÉÈÊÀÂÎÏÔÛÙ])', r"\1'\2", texte)
 
-    # 3. Suppression du Markdown
+    # Suppression du Markdown
     texte = texte.replace("*", "")
     texte = re.sub(r'^#+\s*', '', texte, flags=re.MULTILINE)
     texte = re.sub(r'(?<=\s)_(?=\S)|(?<=\S)_(?=\s)', '', texte)
     texte = texte.replace("_", "")
 
-    # 4. Ponctuation fluide et tirets
+    # Ponctuation fluide et tirets
     texte = re.sub(r'\s*[—–]\s*', ', ', texte)
     texte = re.sub(r'^\s*[—–]\s*', '', texte, flags=re.MULTILINE)
     texte = texte.replace("«", '"').replace("»", '"').replace("“", '"').replace("”", '"')
 
-    # 5. Aération stricte des paragraphes
+    # Aération stricte des paragraphes
     texte = re.sub(r'[ \t]+', ' ', texte)
     texte = re.sub(r' +(?=\n)', '', texte)
     texte = re.sub(r'\n\s*\n', '\n\n', texte)
@@ -148,8 +140,8 @@ def nettoyer_texte_pour_audio(texte: str) -> str:
 
     return texte.strip()
 
-def decouper_texte_en_chunks(texte: str, taille_chunk: int = 28000) -> list:
-    """Découpe en blocs d'environ 28 000 caractères pour concilier contexte et aération."""
+def decouper_texte_en_chunks(texte: str, taille_chunk: int = 75000) -> list:
+    """Permet de traiter jusqu'à 75 000 caractères par bloc pour traduire un chapitre d'un seul tenant."""
     if not texte:
         return []
     
@@ -198,15 +190,22 @@ def traduire_chunk_gemini(chunk: str, api_key: str) -> str:
         system_instruction=SYSTEM_INSTRUCTION
     )
 
-    generation_config = genai.types.GenerationConfig(
-        temperature=0.2,
-        max_output_tokens=65536
-    )
+    # Paramétrage strict pour éviter la facturation des tokens de réflexion inutiles
+    try:
+        generation_config = genai.types.GenerationConfig(
+            temperature=0.2,
+            max_output_tokens=65536,
+            thinking_config={"thinking_budget": 0}
+        )
+        response = model.generate_content(chunk, generation_config=generation_config)
+    except Exception:
+        # Fallback si l'argument thinking_config est rejeté par la version du SDK
+        generation_config = genai.types.GenerationConfig(
+            temperature=0.2,
+            max_output_tokens=65536
+        )
+        response = model.generate_content(chunk, generation_config=generation_config)
 
-    response = model.generate_content(
-        chunk,
-        generation_config=generation_config
-    )
     return response.text.strip()
 
 # ==============================================================================
@@ -230,7 +229,7 @@ def generer_audio_hd(texte_francais: str, voix_choisie: str) -> bytes:
 # ==============================================================================
 def main():
     st.title("🎛️ Le Studio Audio Master")
-    st.markdown("Pipeline Haute Fidélité : PyMuPDF ➡️ **Gemini 3.8 Flash (Structure & Éco-Tokens)** ➡️ Edge-TTS HD.")
+    st.markdown("Pipeline Haute Fidélité : PyMuPDF ➡️️ **Gemini 3.8 Flash (Éco-Tokens)** ➡️ **Edge-TTS HD**.")
     st.divider()
 
     cles_brutes = st.secrets.get("GOOGLE_API_KEYS", None)
@@ -293,7 +292,7 @@ def main():
                         st.error("🚨 Aucune clé API Google valide trouvée.")
                         return
 
-                    chunks_anglais = decouper_texte_en_chunks(texte_propre, taille_chunk=28000)
+                    chunks_anglais = decouper_texte_en_chunks(texte_propre, taille_chunk=75000)
                     chunks_traduits = []
                     barre_progression = st.progress(0, text="Initialisation de Gemini 3.8 Flash...")
 
@@ -304,7 +303,7 @@ def main():
                         pct = int(((i + 1) / len(chunks_anglais)) * 100)
                         barre_progression.progress(
                             pct,
-                            text=f"Traduction partie {i + 1}/{len(chunks_anglais)} (Clé #{index_cle + 1})..."
+                            text=f"Traduction du grand bloc {i + 1}/{len(chunks_anglais)} (Clé #{index_cle + 1})..."
                         )
 
                         cle_active = pool_cles[index_cle]
@@ -377,7 +376,7 @@ def main():
 
             st.write("---")
             if st.button("🎙️ Générer le Livre Audio HD", type="primary"):
-                with st.spinner("🔊 Synthèse vocale fluide en cours..."):
+                with st.spinner("🔊 Synthèse vocale fluide en cours avec Edge-TTS..."):
                     try:
                         texte_final_audio = nettoyer_texte_pour_audio(st.session_state.texte_pret_pour_audio)
                         donnees_audio_mp3 = generer_audio_hd(texte_final_audio, voix_technique)
